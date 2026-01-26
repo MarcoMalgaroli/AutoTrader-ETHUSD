@@ -251,7 +251,7 @@ class MT5Services:
     # Past deals
     def get_history_deals_count(self, from_date: datetime = None, to_date: datetime = None):
         """
-        Get past orders count in a date range (default -> 1 day)
+        Get past deals count in a date range (default -> 1 day)
         """
         to_date = to_date or self.get_current_terminal_time()
         from_date = from_date or (to_date - timedelta(days = 1))
@@ -259,17 +259,19 @@ class MT5Services:
     
     def get_history_deals(self, from_date: datetime = None, to_date: datetime = None):
         """
-        Get past orders in a date range (default -> 1 day)
+        Get past deals in a date range (default -> 1 day)
         """
         to_date = to_date or self.get_current_terminal_time()
         from_date = from_date or (to_date - timedelta(days = 1))
-        orders = mt5.history_deals_get(from_date, to_date)
-        if orders == None:
-            raise Exception(f"No pensing orders found")
-        if len(orders) == 0:
+        deals = mt5.history_deals_get(from_date, to_date)
+        if deals == None:
+            raise Exception(f"No pensing deals found")
+        if len(deals) == 0:
             return None
         
-        df = pd.DataFrame(list(orders), columns = orders[0]._asdict().keys())
+        df = pd.DataFrame(list(deals), columns = deals[0]._asdict().keys())
         df['time'] = df['time'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='s'))
         df['time_msc'] = df['time_msc'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='ms'))
         return df
+
+    # Note: When Pending orders are processed, they become Deals. A list of deals make a Position
