@@ -10,7 +10,7 @@ PRINT_WIDTH = 100
 BASE_PATH_RAW = Path("datasets", "raw")
 BASE_PATH_FINAL = Path("datasets", "final")
 
-def add_features(df):
+def add_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate technical features and cleanup database for ML
     """
@@ -32,7 +32,7 @@ def add_features(df):
     data['ATR'] = AverageTrueRange(high = data['high'], low = data['low'], close = data['close'], window = 14).average_true_range()
     data['ATR_norm'] = data['ATR'] / data['close']
 
-    # Log Returns -> Percentual variation between candles
+    # Log Returns -> Percentual logarithmic variation between candles
     data['log_ret'] = np.log(data['close'] / data['close'].shift(1))
 
     # Volume change
@@ -41,7 +41,7 @@ def add_features(df):
 
     return data
 
-def add_target(df):
+def add_target(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add the column the model will predict
     target: 1 if closing price of next candle is greater than the current
@@ -55,7 +55,7 @@ def add_target(df):
     data.drop(columns = ['next_close'], inplace = True)
     return data
 
-def calculate_features(path_list: Optional[List[Path]] = None):
+def calculate_features(path_list: Optional[List[Path]] = None) -> List[Path]:
     print("\n" + " ADDING FEATURES FROM RAW DATASETS ".center(PRINT_WIDTH, "="))
 
     BASE_PATH_FINAL.mkdir(parents = True, exist_ok = True)    
@@ -90,7 +90,7 @@ def calculate_features(path_list: Optional[List[Path]] = None):
             correlation = df_final.corr(numeric_only = True)['target'].sort_values(ascending = False)
             print("      -> Top positive correlations:")
             for idx, val in correlation.head(5).items():
-                print(f"         {idx:<15}: {val:>10.5f}")  # allinea a destra con 10 spazi per il valore e 5 decimali
+                print(f"         {idx:<15}: {val:>10.5f}")
 
             print("\n      -> Top negative correlations:")
             for idx, val in correlation.tail(5).items():
@@ -98,4 +98,5 @@ def calculate_features(path_list: Optional[List[Path]] = None):
 
         except Exception as e:
             print(f" X-> Parsing/reading error: {e}")
+
     return path_list_out

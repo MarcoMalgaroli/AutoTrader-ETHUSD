@@ -42,6 +42,9 @@ def validate_dataset(path_list: Optional[List[Path]] = None, show_graph: Optiona
             symbol, timeframe, length = path.stem.split("_")
             length = int(length)
 
+            print(f"  -> Start date: {df['time'].iloc[0]}")
+            print(f"  -> End date:   {df['time'].iloc[-1]}")
+
             if len(df) != length:
                 print(f" X-> Lenght mismatch: {len(df)} != {length}")
                 ok = False

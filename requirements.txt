@@ -3,3 +3,5 @@ pandas
 ta
 matplotlib
 mplfinance
+scikit-learn
+torch
