@@ -159,4 +159,4 @@ print(classification_report(all_targets, all_preds))
 # --- 5. SAVING ---
 # In PyTorch, save the "state_dict" (weights), not the entire object
 torch.save(model.state_dict(), "lstm_pytorch_weights.pth")
-print("💾 Model saved as 'lstm_pytorch_weights.pth'")
+print("Model saved as 'lstm_pytorch_weights.pth'")

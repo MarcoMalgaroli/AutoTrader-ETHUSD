@@ -273,5 +273,6 @@ class MT5Services:
         df['time'] = df['time'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='s'))
         df['time_msc'] = df['time_msc'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='ms'))
         return df
-
     # Note: When Pending orders are processed, they become Deals. A list of deals make a Position
+
+    

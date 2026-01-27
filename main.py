@@ -17,21 +17,14 @@ def main():
     # # Validate datasets
     # print("Everything is OK" if dataset_utils.validate_dataset(path_list) else "Problems found")
 
-    # # Feature engineering
+    # Feature engineering
+    path_list = [Path('datasets/final/ETHUSD_D1_3059.csv'), Path('datasets/final/ETHUSD_H1_48306.csv'), Path('datasets/final/ETHUSD_M15_176764.csv'), Path('datasets/final/ETHUSD_M5_518717.csv')]
+    print(path_list)
     # feature_engineering.calculate_features(path_list)
 
-    # print("Everything is OK" if dataset_utils.validate_dataset() else "Problems found")
-    # validated_datasets = feature_engineering.calculate_features()
-    # print(validated_datasets)
-
-    # Train Random Forest models --> accuratezza bassa, come lanciare una moneta :(
-    rf_model("datasets\\final\\ETHUSD_D1_3058.csv")
-    rf_model("datasets\\final\\ETHUSD_H1_48284.csv")
-    rf_model("datasets\\final\\ETHUSD_M15_176673.csv")
-    rf_model("datasets\\final\\ETHUSD_M5_518443.csv")
-
-    
-
+    # Train Random Forest models --> accuratezza bassa, come lanciare una moneta
+    for i, dataset_path in enumerate(path_list, start=1):
+        rf_model(dataset_path, rows = 1000 * i)
 
 if __name__ == "__main__":
     main()

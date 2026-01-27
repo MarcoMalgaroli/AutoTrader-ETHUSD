@@ -23,7 +23,7 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     data['EMA20'] = EMAIndicator(close = data['close'], window = 20).ema_indicator()
     data['EMA50'] = EMAIndicator(close = data['close'], window = 50).ema_indicator()
 
-    data['dist_EMA20'] = (data['close'] - data['EMA20'] / data['EMA20'])
+    data['dist_EMA20'] = (data['close'] - data['EMA20']) / data['EMA20']
 
     # RSI (Relative Strength Index -> Momentum)
     data['RSI'] = RSIIndicator(close = data['close'], window = 14).rsi()
@@ -41,18 +41,34 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
 
     return data
 
-def add_target(df: pd.DataFrame) -> pd.DataFrame:
+def add_target(df: pd.DataFrame, lookahead: int = 10, atr_mult_tp: float = 0.5, atr_mult_sl: float = 0.5) -> pd.DataFrame:
     """
-    Add the column the model will predict
-    target: 1 if closing price of next candle is greater than the current
+    Multi-class target:
+    0 = no trade / close
+    1 = good long
+    2 = good short
     """
     data = df.copy()
-    data['next_close'] = data['close'].shift(-1)
 
-    # Target as a binary value
-    data['target'] = (data['next_close'] > data['close']).astype(int)
+    highs = data['high'].rolling(lookahead).max().shift(-lookahead) # max high in the next lookahead candles
+    lows  = data['low'].rolling(lookahead).min().shift(-lookahead)  # min low in the next lookahead candles
 
-    data.drop(columns = ['next_close'], inplace = True)
+    close = data['close']
+    atr   = data['ATR']
+
+    long_tp  = close + atr_mult_tp * atr # take profit for long
+    long_sl  = close - atr_mult_sl * atr # stop loss for long
+    short_tp = close - atr_mult_tp * atr # take profit for short
+    short_sl = close + atr_mult_sl * atr # stop loss for short
+
+    target = np.zeros(len(data), dtype=int) # default 0 = no trade / close
+    long_cond = (highs >= long_tp) & (lows > long_sl) # conditions for a good long trade
+    short_cond = (lows <= short_tp) & (highs < short_sl) # conditions for a good short trade
+
+    target[long_cond] = 1 # 1 = good long
+    target[short_cond] = 2 # 2 = good short
+
+    data['target'] = target
     return data
 
 def calculate_features(path_list: Optional[List[Path]] = None) -> List[Path]:
