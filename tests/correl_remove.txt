@@ -1,0 +1,77 @@
+
+Correlated feature removed
+====================================== RANDOM FOREST TRAINING ======================================
+---> Loading dataset from datasets\final\ETHUSD_D1_3065.csv...
+  -> Redundant features removed (31): ['RSI_10', 'RSI_10_diff', 'RSI_15', 'RSI_15_diff', 'RSI_20', 'RSI_20_diff', 'StochRSI_14_d', 'EMA_5', 'dist_EMA_5', 'dist_EMA_5_diff', 'SMA_10', 'EMA_10', 'dist_SMA_10', 'dist_SMA_10_diff', 'dist_EMA_10', 'dist_EMA_10_diff', 'SMA_20', 'EMA_20', 'dist_SMA_20', 'dist_SMA_20_diff', 'dist_EMA_20', 'dist_EMA_20_diff', 'SMA_50', 'EMA_50', 'dist_SMA_50_diff', 'dist_EMA_50', 'dist_EMA_50_diff', 'BB_pct', 'KC_width_pct', 'KC_pct', 'log_ret']
+  -> Features used (21): ['tick_volume', 'spread', 'RSI_5', 'RSI_5_diff', 'ROC_10', 'StochRSI_14_k', 'SMA_5', 'dist_SMA_5', 'dist_SMA_5_diff', 'dist_SMA_50', 'MACD', 'MACD_norm', 'ATR_14', 'ATR_norm', 'BB_width_pct', 'OBV_pct', 'ADI_diff', 'EMI_norm', 'NVI_pct', 'vol_SMA_20', 'vol_rel']
+  -> Training on 2552 rows (with gap=10 to avoid leakage)
+  -> Testing on 453 rows
+  -> Results on Test Set
+Accuracy: 0.46799116997792495
+
+Classification Report:
+               precision    recall  f1-score   support
+
+          -1       0.47      0.74      0.57       202
+           0       0.34      0.30      0.32        37
+           1       0.51      0.24      0.32       214
+
+    accuracy                           0.47       453
+   macro avg       0.44      0.43      0.41       453
+weighted avg       0.48      0.47      0.44       453
+
+  -> Confusion Matrix:
+     Was SHORT and predicted SHORT : 150 (33.11%) | Was SHORT and predicted HOLD : 12 (2.65%) | Was SHORT and predicted LONG : 40 (8.83%)
+     Was HOLD and predicted SHORT : 17 (3.75%) | Was HOLD and predicted HOLD : 11 (2.43%) | Was HOLD and predicted LONG : 9 (1.99%)
+     Was LONG and predicted SHORT : 154 (34.00%) | Was LONG and predicted HOLD : 9 (1.99%) | Was LONG and predicted LONG : 51 (11.26%)
+     Overall Accuracy: 46.80%
+
+--- TOP 10 FEATURE VINCENTI ---
+1. MACD (0.0956)
+2. BB_width_pct (0.0862)
+3. ROC_10 (0.0770)
+4. dist_SMA_50 (0.0766)
+5. ATR_norm (0.0688)
+6. SMA_5 (0.0641)
+7. ATR_14 (0.0625)
+8. MACD_norm (0.0621)
+9. vol_SMA_20 (0.0599)
+10. StochRSI_14_k (0.0532)
+
+====================================== RANDOM FOREST TRAINING ======================================
+---> Loading dataset from datasets\final\ETHUSD_H1_48449.csv...
+  -> Redundant features removed (31): ['RSI_10', 'RSI_10_diff', 'RSI_15', 'RSI_15_diff', 'RSI_20', 'RSI_20_diff', 'StochRSI_14_d', 'EMA_5', 'dist_EMA_5', 'dist_EMA_5_diff', 'SMA_10', 'EMA_10', 'dist_SMA_10', 'dist_SMA_10_diff', 'dist_EMA_10', 'dist_EMA_10_diff', 'SMA_20', 'EMA_20', 'dist_SMA_20', 'dist_SMA_20_diff', 'dist_EMA_20', 'dist_EMA_20_diff', 'SMA_50', 'EMA_50', 'dist_SMA_50_diff', 'dist_EMA_50', 'dist_EMA_50_diff', 'BB_pct', 'KC_width_pct', 'KC_pct', 'log_ret']
+  -> Features used (21): ['tick_volume', 'spread', 'RSI_5', 'RSI_5_diff', 'ROC_10', 'StochRSI_14_k', 'SMA_5', 'dist_SMA_5', 'dist_SMA_5_diff', 'dist_SMA_50', 'MACD', 'MACD_norm', 'ATR_14', 'ATR_norm', 'BB_width_pct', 'OBV_pct', 'ADI_diff', 'EMI_norm', 'NVI_pct', 'vol_SMA_20', 'vol_rel']
+  -> Training on 41129 rows (with gap=10 to avoid leakage)
+  -> Testing on 7260 rows
+  -> Results on Test Set
+Accuracy: 0.4287878787878788
+
+Classification Report:
+               precision    recall  f1-score   support
+
+          -1       0.48      0.53      0.51      3471
+           0       0.13      0.21      0.16       544
+           1       0.45      0.36      0.40      3245
+
+    accuracy                           0.43      7260
+   macro avg       0.35      0.37      0.35      7260
+weighted avg       0.44      0.43      0.43      7260
+
+  -> Confusion Matrix:
+     Was SHORT and predicted SHORT : 1840 (25.34%) | Was SHORT and predicted HOLD : 409 (5.63%) | Was SHORT and predicted LONG : 1222 (16.83%)
+     Was HOLD and predicted SHORT : 239 (3.29%) | Was HOLD and predicted HOLD : 114 (1.57%) | Was HOLD and predicted LONG : 191 (2.63%)
+     Was LONG and predicted SHORT : 1728 (23.80%) | Was LONG and predicted HOLD : 358 (4.93%) | Was LONG and predicted LONG : 1159 (15.96%)
+     Overall Accuracy: 42.88%
+
+--- TOP 10 FEATURE VINCENTI ---
+1. SMA_5 (0.0681)
+2. vol_rel (0.0665)
+3. vol_SMA_20 (0.0593)
+4. ATR_norm (0.0565)
+5. ATR_14 (0.0563)
+6. dist_SMA_50 (0.0537)
+7. BB_width_pct (0.0521)
+8. RSI_5 (0.0518)
+9. MACD (0.0518)
+10. MACD_norm (0.0502)

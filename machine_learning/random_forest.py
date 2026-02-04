@@ -1,52 +1,96 @@
-from pathlib import Path
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix
+
 
 PRINT_WIDTH = 100
 
-def train_random_forest_model(file_name, rows: int = 1000):
+
+def remove_highly_correlated_features(df: pd.DataFrame, threshold: float = 0.90) -> pd.DataFrame:
+    """
+    Remove the features that have a correlation higher than the threshold.
+    """
+    features_df = df.drop(columns=['target', 'time'], errors='ignore')
+    corr_matrix = features_df.corr().abs()
+
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+
+    to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
+    
+    print(f"  -> Redundant features removed ({len(to_drop)}): {to_drop}")
+    return df.drop(columns=to_drop)
+
+def train_random_forest_model(file_name):
     """
     Train a Random Forest model on the dataset located at file_name.
     Args:
         file_name (str): Path to the CSV file containing the dataset.
-        rows (int): Number of rows to read from the tail of the dataset. Default is 1000.
     """
     print("\n" + " RANDOM FOREST TRAINING ".center(PRINT_WIDTH, "="))
 
     print(f"---> Loading dataset from {file_name}...")
-    df = pd.read_csv(file_name).tail(rows)
+    df = pd.read_csv(file_name)
 
-    # Columns to remove in order to train on features only to learn patterns
-    drop_cols = ['time', 'target', 'open', 'high', 'low', 'close', 'tick_volume']
-    # Building feature matrix X and target vector y
-    feature_cols = [c for c in df.columns if c not in drop_cols]
-    X = df[feature_cols]
+    # cols_to_drop = ['time', 'target', 'open', 'high', 'low', 'close', 
+    #             'SMA_5', 'EMA_5', 'SMA_10', 'EMA_10', 'SMA_20', 'EMA_20', 'SMA_50', 'EMA_50', 
+    #             'ATR_14', 'MACD', 'vol_SMA_20', 'tick_volume']
+    # SELECTED_FEATURES = [c for c in df.columns if c not in cols_to_drop]
+    
+    # SELECTED_FEATURES = [
+    #     'BB_width_pct',
+    #     'dist_SMA_20',
+    #     'dist_SMA_50',
+    #     'KC_width_pct',
+    #     'MACD_norm',
+    #     'KC_pct',
+    #     'dist_EMA_50',
+    #     'RSI_20',
+    #     'BB_pct',
+    #     'ATR_norm',
+    #     'vol_rel',
+    #     'spread',
+    #     'OBV_pct',
+    # ]
+
+    SELECTED_FEATURES = remove_highly_correlated_features(df[[c for c in df.columns if c not in ['time', 'target', 'open', 'high', 'low', 'close']]]).columns.tolist()
+    
+    X = df[SELECTED_FEATURES]
     y = df['target']
     
-    print(f"  -> Features used ({len(feature_cols)}): {feature_cols}")
+    print(f"  -> Features used ({len(SELECTED_FEATURES)}): {SELECTED_FEATURES}")
 
     # Temporal Split use 85% for training and the rest for testing
-    split_point = int(len(df) * 0.95)
+    # Gap to avoid Triple Barrier lookahead leakage (default lookahead=10)
+    train_size = int(len(df) * 0.85)
+    gap = 10  # Should match the lookahead used in labeling
     
-    X_train = X.iloc[:split_point]
-    X_test = X.iloc[split_point:]
-    y_train = y.iloc[:split_point]
-    y_test = y.iloc[split_point:]
+    X_train, X_test = X.iloc[:train_size - gap], X.iloc[train_size:]
+    y_train, y_test = y.iloc[:train_size - gap], y.iloc[train_size:]
     
-    print(f"  -> Training on {len(X_train)} rows")
+    print(f"  -> Training on {len(X_train)} rows (with gap={gap} to avoid leakage)")
     print(f"  -> Testing on {len(X_test)} rows")
 
     # Random Forest Training
-    # n_estimators=100 means 100 decision trees
-    # min_samples_leaf=50 prevents the model from memorizing noise (overfitting)
+    # n_estimators = decision trees count
+    # min_samples_leaf prevents the model from memorizing noise (overfitting)
+    # model = RandomForestClassifier(
+    #     n_estimators = 200,
+    #     max_depth = 12,
+    #     min_samples_split = 2,
+    #     min_samples_leaf = 4,
+    #     class_weight = 'balanced',
+    #     random_state = 42,
+    #     n_jobs = -1,
+    # )
+
     model = RandomForestClassifier(
-        n_estimators = 200,
-        max_depth = 8,
-        min_samples_leaf = 50,
-        max_features = 0.7,
-        class_weight = "balanced",
+        n_estimators = 150,
+        max_depth = 20,
+        min_samples_split = 60,
+        min_samples_leaf = 2,
+        class_weight = 'balanced',
         random_state = 42,
         n_jobs = -1,
     )
@@ -54,44 +98,32 @@ def train_random_forest_model(file_name, rows: int = 1000):
 
     # Evaluation
     print("  -> Results on Test Set")
+    preds = model.predict(X_test)
+    print("Accuracy:", model.score(X_test, y_test))
+    print("\nClassification Report:\n", classification_report(y_test, preds))
 
-    # probs = model.predict_proba(X_test)
-    probs = model.predict_proba(X_test)
-    p_flat  = probs[:, 0]
-    p_long  = probs[:, 1]
-    p_short = probs[:, 2]
-
-
-    print("      -> Avg probabilities:")
-    print(f"FLAT  : {p_flat.mean():.3f}")
-    print(f"LONG  : {p_long.mean():.3f}")
-    print(f"SHORT : {p_short.mean():.3f}")
-
-    print("      -> Max probabilities:")
-    print(f"FLAT  : {p_flat.max():.3f}")
-    print(f"LONG  : {p_long.max():.3f}")
-    print(f"SHORT : {p_short.max():.3f}")
-
-    threshold = 0.45
-
-    preds_thr = np.where(
-        p_long > threshold, 1,
-        np.where(p_short > threshold, 2, 0)
-    )
-    
-    print("  -> Classification Report:")
-    print(classification_report(
-        y_test,
-        preds_thr,
-        target_names = ["FLAT", "LONG", "SHORT"],
-        zero_division = 0
-    ))
-        
-    # Confusion Matrix
-    cm = confusion_matrix(y_test, preds_thr)
+    class_names = { -1: 'SHORT', 0: 'HOLD', 1: 'LONG' }
+    cm = confusion_matrix(y_test, preds)
     print("  -> Confusion Matrix:")
-    print(f"     True FLAT: {cm[0][0]} ({cm[0][0] * 100 / len(y_test):.2f}%) | False FLAT (LONG): {cm[0][1]} ({cm[0][1] * 100 / len(y_test):.2f}%) | False FLAT (SHORT): {cm[0][2]} ({cm[0][2] * 100 / len(y_test):.2f}%)")
-    print(f"     False LONG (FLAT): {cm[1][0]} ({cm[1][0] * 100 / len(y_test):.2f}%) | True LONG (Profit): {cm[1][1]} ({cm[1][1] * 100 / len(y_test):.2f}%) | False LONG (SHORT): {cm[1][2]} ({cm[1][2] * 100 / len(y_test):.2f}%)")
-    print(f"     False SHORT (FLAT): {cm[2][0]} ({cm[2][0] * 100 / len(y_test):.2f}%) | False SHORT (LONG): {cm[2][1]} ({cm[2][1] * 100 / len(y_test):.2f}%) | True SHORT (Profit): {cm[2][2]} ({cm[2][2] * 100 / len(y_test):.2f}%)")
+    print(f"     Was {class_names[-1]} and predicted {class_names[-1]} : {cm[0][0]} ({cm[0][0] * 100 / len(y_test):.2f}%) | Was {class_names[-1]} and predicted {class_names[0]} : {cm[0][1]} ({cm[0][1] * 100 / len(y_test):.2f}%) | Was {class_names[-1]} and predicted {class_names[1]} : {cm[0][2]} ({cm[0][2] * 100 / len(y_test):.2f}%)")
+    print(f"     Was {class_names[0]} and predicted {class_names[-1]} : {cm[1][0]} ({cm[1][0] * 100 / len(y_test):.2f}%) | Was {class_names[0]} and predicted {class_names[0]} : {cm[1][1]} ({cm[1][1] * 100 / len(y_test):.2f}%) | Was {class_names[0]} and predicted {class_names[1]} : {cm[1][2]} ({cm[1][2] * 100 / len(y_test):.2f}%)")
+    print(f"     Was {class_names[1]} and predicted {class_names[-1]} : {cm[2][0]} ({cm[2][0] * 100 / len(y_test):.2f}%) | Was {class_names[1]} and predicted {class_names[0]} : {cm[2][1]} ({cm[2][1] * 100 / len(y_test):.2f}%) | Was {class_names[1]} and predicted {class_names[1]} : {cm[2][2]} ({cm[2][2] * 100 / len(y_test):.2f}%)")
     print(f"     Overall Accuracy: {(cm[0][0] + cm[1][1] + cm[2][2]) * 100 / len(y_test):.2f}%")
+
+    # --- FEATURE IMPORTANCE (La parte più importante!) ---
+    importances = model.feature_importances_
+    indices = np.argsort(importances)[::-1]
+
+    print("\n--- TOP 10 FEATURE VINCENTI ---")
+    for f in range(10):
+        print(f"{f+1}. {SELECTED_FEATURES[indices[f]]} ({importances[indices[f]]:.4f})")
+
+    # plt.figure(figsize=(12, 6))
+    # plt.title("Feature Importances (Cosa guarda il modello?)")
+    # plt.bar(range(X.shape[1]), importances[indices], align="center")
+    # plt.xticks(range(X.shape[1]), [SELECTED_FEATURES[i] for i in indices], rotation=90)
+    # plt.xlabel("Feature")
+    # plt.ylabel("Importanza")
+    # plt.tight_layout()
+    # plt.show()
     return model

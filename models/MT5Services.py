@@ -9,9 +9,13 @@ pd.set_option('display.width', 1500)      # max. table width to display
 
 class MT5Services:
     def __init__(self, symbol: str = "ETHUSD"):
-        if not self.connect_mt5():
-            raise ConnectionError("Unable to connect to MT5 terminal")
-        self.select_mt5_symbol(symbol)
+        try:
+            self.connect_mt5()
+            self.select_mt5_symbol(symbol)
+        except Exception as e:
+            self.shutdown()
+            raise e
+        
         self.timeframes = {
             "M1": mt5.TIMEFRAME_M1,
             "M2": mt5.TIMEFRAME_M2,
@@ -41,9 +45,7 @@ class MT5Services:
         MetaTrader5 connection
         """
         if not mt5.initialize():
-            print("initialize() failed, error code =", mt5.last_error())
-            self.shutdown()
-            return False
+            raise ConnectionError(f"initialize() failed, error code = {mt5.last_error()}")
         return True
 
     def shutdown(self) -> None:
@@ -71,7 +73,6 @@ class MT5Services:
         """
         if not mt5.symbol_select(symbol, True):
             raise ValueError(f"Symbol {symbol} not present in Market Watch")
-            return False
         self.symbol = symbol
         return True
     
@@ -81,7 +82,7 @@ class MT5Services:
         """
         return self.symbol
     
-    def get_symbol_info(self, symbol: str = None) -> Optional[dict]:
+    def get_symbol_info(self, symbol: Optional[str] = None) -> Optional[dict]:
         """
         Return selected or specified symbol info
         """
@@ -90,7 +91,7 @@ class MT5Services:
             raise Exception(f"Symbol \"{symbol}\" not found")
         return symbol_info._asdict()
     
-    def get_last_tick(self, symbol: str = None):
+    def get_last_tick(self, symbol: Optional[str] = None) -> Optional[dict]:
         """
         Returns last tick of the selected or specified symbol
         """
@@ -98,13 +99,13 @@ class MT5Services:
         if last_tick is not None:
             return last_tick._asdict()
 
-    def __safe_convert_to_datetime(self, value, unit='s'):
-        return pd.to_datetime(value, unit=unit, errors='coerce') if value != 0 else 0
+    def __safe_convert_to_datetime(self, value, unit='s') -> Optional[datetime]:
+        return pd.to_datetime(value, unit=unit, errors='coerce') if value != 0 else None
     
-    def get_current_terminal_time(self):
+    def get_current_terminal_time(self) -> Optional[datetime]:
         return self.__safe_convert_to_datetime(self.get_last_tick()['time'])
     
-    def get_historical_data_range(self, symbol: str = None, timeframe: str = "M5", from_date: datetime = None, to_date: datetime = None) -> Optional[pd.DataFrame]:
+    def get_historical_data_range(self, symbol: Optional[str] = None, timeframe: str = "M5", from_date: Optional[datetime] = None, to_date: Optional[datetime] = None) -> Optional[pd.DataFrame]:
         """
         Return historical data of selected or specified symbol between dates (or in a day interval from now)
         """
@@ -123,7 +124,7 @@ class MT5Services:
         rates_frame = rates_frame[['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread']]
         return rates_frame
     
-    def get_historical_data_pos(self, symbol: str = None, timeframe: str = "M5", pos: int = 0, count: int = 1000) -> pd.DataFrame | None:
+    def get_historical_data_pos(self, symbol: Optional[str] = None, timeframe: str = "M5", pos: int = 0, count: int = 1000) -> Optional[pd.DataFrame]:
         """
         Returns historical data of selected or specified symbol starting from pos, selecting count bars
         """
@@ -138,10 +139,10 @@ class MT5Services:
         rates_frame = pd.DataFrame(rates)       
         rates_frame['time'] = pd.to_datetime(rates_frame['time'], unit = 's')
         rates_frame = rates_frame[['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread']]
-        print(f"  -> Done: downloaded {len(rates)} bars")
+        print(f"\x1b[92m  -> Done: downloaded {len(rates)} bars\x1b[0m")
         return rates_frame
 
-    def get_historical_data_all(self, symbol: str = None, timeframe: str = "M5", chunk: int = 10000):
+    def get_historical_data_all(self, symbol: Optional[str] = None, timeframe: str = "M5", chunk: int = 10000) -> Optional[pd.DataFrame]:
         """
         Returns all available history for the selected or specified symbol
         """
@@ -167,26 +168,27 @@ class MT5Services:
         all_df = pd.concat(dfs, ignore_index=True)
         all_df = all_df.sort_values("time").reset_index(drop=True)
         all_df = all_df[['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread']]
-        print(f"  -> Done: downloaded {len(all_df)} bars")
+        print(f"\x1b[92m  -> Done: downloaded {len(all_df)} bars\x1b[0m")
         return all_df
 
     # Active orders
-    def get_active_orders_count(self):
+    def get_active_orders_count(self) -> int:
         """
         Get active pending orders count
         """
         return mt5.orders_total()
     
-    def get_active_orders(self):
+    def get_active_orders(self) -> Optional[pd.DataFrame]:
         """
         Get active pending orders
         """
         orders = mt5.orders_get()
         if orders == None:
-            raise Exception(f"No pensing orders found")
+            raise Exception(f"No pending orders found")
         if len(orders) == 0:
             return None
         df = pd.DataFrame(list(orders), columns = orders[0]._asdict().keys())
+        print(f"\x1b[92m  -> Retrieved {len(df)} active orders\x1b[0m")
 
         df['time_setup'] = df['time_setup'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='s'))
         df['time_setup_msc'] = df['time_setup_msc'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='ms'))
@@ -196,13 +198,13 @@ class MT5Services:
         return df
     
     # open positions
-    def get_active_positions_count(self):
+    def get_active_positions_count(self) -> int:
         """
         Get active positions count
         """
         return mt5.positions_total()
     
-    def get_active_positions(self):
+    def get_active_positions(self) -> Optional[pd.DataFrame]:
         """
         Get active positions
         """
@@ -213,6 +215,7 @@ class MT5Services:
             return None
 
         df = pd.DataFrame(list(positions), columns = positions[0]._asdict().keys())
+        print(f"\x1b[92m  -> Retrieved {len(df)} active positions\x1b[0m")
         df['time'] = df['time'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='s'))
         df['time_msc'] = df['time_msc'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='ms'))
         df['time_update'] = df['time_update'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='s'))
@@ -220,7 +223,7 @@ class MT5Services:
         return df
 
     # Past orders
-    def get_history_orders_count(self, from_date: datetime = None, to_date: datetime = None):
+    def get_history_orders_count(self, from_date: Optional[datetime] = None, to_date: Optional[datetime] = None) -> int:
         """
         Get past orders count in a date range (default -> 1 day)
         """
@@ -228,7 +231,7 @@ class MT5Services:
         from_date = from_date or (to_date - timedelta(days = 1))
         return mt5.history_orders_total(from_date, to_date)
     
-    def get_history_orders(self, from_date: datetime = None, to_date: datetime = None):
+    def get_history_orders(self, from_date: Optional[datetime] = None, to_date: Optional[datetime] = None) -> Optional[pd.DataFrame]:
         """
         Get past orders in a date range (default -> 1 day)
         """
@@ -236,7 +239,7 @@ class MT5Services:
         from_date = from_date or (to_date - timedelta(days = 1))
         orders = mt5.history_orders_get(from_date, to_date)
         if orders == None:
-            raise Exception(f"No pensing orders found")
+            raise Exception(f"No pending orders found")
         if len(orders) == 0:
             return None
         
@@ -249,7 +252,7 @@ class MT5Services:
         return df
     
     # Past deals
-    def get_history_deals_count(self, from_date: datetime = None, to_date: datetime = None):
+    def get_history_deals_count(self, from_date: Optional[datetime] = None, to_date: Optional[datetime] = None) -> int:
         """
         Get past deals count in a date range (default -> 1 day)
         """
@@ -257,7 +260,7 @@ class MT5Services:
         from_date = from_date or (to_date - timedelta(days = 1))
         return mt5.history_deals_total(from_date, to_date)
     
-    def get_history_deals(self, from_date: datetime = None, to_date: datetime = None):
+    def get_history_deals(self, from_date: Optional[datetime] = None, to_date: Optional[datetime] = None) -> Optional[pd.DataFrame]:
         """
         Get past deals in a date range (default -> 1 day)
         """
@@ -265,7 +268,7 @@ class MT5Services:
         from_date = from_date or (to_date - timedelta(days = 1))
         deals = mt5.history_deals_get(from_date, to_date)
         if deals == None:
-            raise Exception(f"No pensing deals found")
+            raise Exception(f"No pending deals found")
         if len(deals) == 0:
             return None
         

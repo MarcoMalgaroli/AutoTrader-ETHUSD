@@ -7,7 +7,7 @@ from models.MT5Services import MT5Services
 PRINT_WIDTH = 100
 BASE_PATH_RAW = Path("datasets", "raw")
 
-def generate_dataset(mt5: MT5Services, symbol: str = None, timeframes: List[str] = ["D1", "H1", "M15", "M5"]) -> List[Path]:
+def generate_dataset(mt5: MT5Services, symbol: Optional[str] = None, timeframes: List[str] = ["D1", "H1", "M15", "M5"]) -> List[Path]:
     symbol = symbol or mt5.get_selected_symbol()
     print("\n" + f" CREATING DATASET FOR {symbol} ".center(PRINT_WIDTH, "="))
     
@@ -18,14 +18,17 @@ def generate_dataset(mt5: MT5Services, symbol: str = None, timeframes: List[str]
         try:
             df = mt5.get_historical_data_all(symbol, timeframe = tf)
 
+            if df is None:
+                raise ValueError(f"No data returned for {symbol} [{tf}]")
+
             file_path = BASE_PATH_RAW / f"{symbol}_{tf}_{len(df)}.csv"
             df.to_csv(file_path, index = False)
 
-            print(f"  -> Dataset for {symbol} [{tf}] saved at {file_path}")
+            print(f"\x1b[92m  -> Dataset for {symbol} [{tf}] saved at {file_path}\x1b[0m")
             path_list.append(file_path)
         
         except Exception as e:
-            print(f"Error, {symbol} [{tf}]: {e}")
+            raise Exception(f"Error generating dataset for {symbol} [{tf}]: {type(e).__name__} -> {e}")
     return path_list
 
 def validate_dataset(path_list: Optional[List[Path]] = None, show_graph: Optional[bool] = False) -> bool:
@@ -35,10 +38,10 @@ def validate_dataset(path_list: Optional[List[Path]] = None, show_graph: Optiona
 
     flag = True
     for path in path_list:
-        print(f"---> Validating {path.name}")
+        print(f"\n---> Validating {path.name}")
         ok = True
         try:
-            df = pd.read_csv(path, parse_dates = True)
+            df = pd.read_csv(path, parse_dates = ['time'])
             symbol, timeframe, length = path.stem.split("_")
             length = int(length)
 
@@ -46,26 +49,26 @@ def validate_dataset(path_list: Optional[List[Path]] = None, show_graph: Optiona
             print(f"  -> End date:   {df['time'].iloc[-1]}")
 
             if len(df) != length:
-                print(f" X-> Lenght mismatch: {len(df)} != {length}")
+                print(f"\x1b[91;1m X-> Length mismatch: {len(df)} != {length}\x1b[0m")
                 ok = False
             
             required_cols = {"time", "open", "high", "low", "close", "tick_volume", "spread"}
             missing = required_cols - set(df.columns)
             if missing:
-                print(f" X-> Missing columns: {missing}")
+                print(f"\x1b[91;1m X-> Missing columns: {missing}\x1b[0m")
                 ok = False
             
             if df.isnull().any().any():
-                print(" X-> NaN values found")
+                print("\x1b[91;1m X-> NaN values found\x1b[0m")
                 ok = False
 
             df["time"] = pd.to_datetime(df["time"])
             if not df["time"].is_monotonic_increasing:
-                print(" X-> Data not sorted chronologically")
+                print("\x1b[91;1m X-> Data not sorted chronologically\x1b[0m")
                 ok = False
             
             if ok:
-                print("  -> Success")
+                print("\x1b[92m  -> Success\x1b[0m")
                 if show_graph:
                     df.set_index('time', inplace = True)
                     df.rename(columns = {"tick_volume": "volume"}, inplace = True)
@@ -74,6 +77,52 @@ def validate_dataset(path_list: Optional[List[Path]] = None, show_graph: Optiona
                 flag = False
 
         except Exception as e:
-            print(f" X-> Parsing/reading error: {e}")
+            print(f"\x1b[91;1m X-> Parsing/reading error: {type(e).__name__} -> {e}\x1b[0m")
             flag = False
     return flag
+
+def plot_dataset(path: Path, num_candles: int = 200, atr_mult: float = 1.0):
+    print("\n" + f"\x1b[36mPlotting dataset {path.name}\x1b[0m")
+    try:
+        df = pd.read_csv(path, parse_dates = ['time']).tail(num_candles)
+        df.set_index('time', inplace = True)
+        df.rename(columns = {"tick_volume": "volume"}, inplace = True)
+
+        longs = df['close'].where(df['target'] == 1)
+        shorts = df['close'].where(df['target'] == -1)
+
+        df['upper_barrier']  = df['close'] + atr_mult * df['ATR_14']
+        df['lower_barrier']  = df['close'] - atr_mult * df['ATR_14']
+
+        def barrier_segments(df):
+            alines = []
+            colors = []
+
+            for i in range(len(df)):
+                t = df.index[i]
+                close = df['close'].iloc[i]
+
+                if df['target'].iloc[i] != 0:  # LONG or SHORT
+                    alines.append([(t, close), (t, df['upper_barrier'].iloc[i])]) # plot upper barrier
+                    alines.append([(t, close), (t, df['lower_barrier'].iloc[i])]) # plot lower barrier
+
+                    if df['target'].iloc[i] == 1:  # LONG ==> upper green (take profit), lower red (stop loss)
+                        colors.append('green')
+                        colors.append('red')
+                    elif df['target'].iloc[i] == -1:  # SHORT ==> upper red (stop loss), lower green (take profit)
+                        colors.append('red')
+                        colors.append('green')
+
+            return dict(alines=alines, colors=colors, linestyle = 'dotted', linewidths=3)
+
+        apds = [
+            mpf.make_addplot(df['EMA_20'], color='orange', width=1),
+            mpf.make_addplot(df['SMA_50'], color='blue', width=1),
+            mpf.make_addplot(df['RSI_10'], color='purple', panel=1, ylabel='RSI_10'),
+            mpf.make_addplot(df['ATR_14'], panel=2, color='red', ylabel='ATR_14'),
+            mpf.make_addplot(longs, type='scatter', marker='^', color='green', markersize=50),
+            mpf.make_addplot(shorts, type='scatter', marker='v', color='red', markersize=50),
+        ]
+        mpf.plot(df, type = 'candle', title = f'{path.stem}', volume = True, addplot = apds, style = 'yahoo', alines = barrier_segments(df), figsize=(12, 8))
+    except Exception as e:
+        raise Exception(f"Error plotting dataset {path.name}: {type(e).__name__} -> {e}")
