@@ -4,38 +4,40 @@ import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
 from pathlib import Path
 
+PRINT_WIDTH = 100
 
-# Le tue feature vincenti
+
+# winning features
 SELECTED_FEATURES = [
     'BB_width_pct', 'KC_width_pct', 'ATR_norm', 'dist_SMA_50', 
     'dist_EMA_50', 'RSI_15', 'vol_rel', 'MACD_norm', 'RSI_20', 'EMI_norm'
 ]
 
 def backtest(path: Path, initial_capital: float = 10000):
-    print(f"--- Caricamento e Preparazione Backtest ---")
+    print("\n" + " BACKTEST ".center(PRINT_WIDTH, "="))
     df = pd.read_csv(path)
 
-    # Prepariamo i dati
+    # Prepare the data
     X = df[SELECTED_FEATURES]
     y = df['target']
 
-    # Split Temporale (85% Train, 15% Backtest)
+    # Temporal Split (85% Train, 15% Backtest)
     train_size = int(len(df) * 0.85)
 
     X_train = X.iloc[:train_size]
-    X_test = X.iloc[train_size:].copy() # .copy() per evitare warning
+    X_test = X.iloc[train_size:].copy() # .copy() to avoid warning
     y_train = y.iloc[:train_size]
     y_test = y.iloc[train_size:]
 
-    # Dati di prezzo per il calcolo profitti (corrispondenti al test set)
-    # Nota: shift(-1) perché se il segnale è OGGI, noi tradiamo la candela di DOMANI (o la chiusura di oggi)
-    # Per semplicità, assumiamo:
-    # Segnale calcolato alla chiusura di Ieri -> Entro in Open di Oggi -> Esco in Close di Oggi
+    # Price data for profit calculation (corresponding to the test set)
+    # Note: shift(-1) because if the signal is TODAY, we trade the candle of TOMORROW (or today's close)
+    # For simplicity, we assume:
+    # Signal calculated at Yesterday's close -> Enter at Today's Open -> Exit at Today's Close
     price_data = df.iloc[train_size:].copy()
     price_data = price_data[['open', 'close', 'high', 'low']]
 
-    # --- ADDESTRAMENTO MODELLO ---
-    print("Addestramento modello in corso...")
+    # --- MODEL TRAINING ---
+    print("  -> Training model...")
 
     # best for hourly data
     # rf = RandomForestClassifier(
@@ -55,49 +57,49 @@ def backtest(path: Path, initial_capital: float = 10000):
     )
     rf.fit(X_train, y_train)
 
-    # Generiamo i segnali sul Test Set
+    # Generate signals on the Test Set
     signals = rf.predict(X_test)
     price_data['signal'] = signals
 
-    # --- MOTORE DI BACKTEST ---
-    print("Simulazione Trading...")
+    # --- BACKTEST ENGINE ---
+    print("  -> Running backtest...")
 
     equity = [initial_capital]
     capital = initial_capital
     wins = 0
     losses = 0
 
-    # Loop giorno per giorno
+    # Loop day by day
     for i in range(len(price_data)):
-        # Dati del giorno
+        # Data of the day
         open_price = price_data.iloc[i]['open']
         close_price = price_data.iloc[i]['close']
         sig = price_data.iloc[i]['signal']
         
-        # Calcolo variazione percentuale della giornata
+        # Calculate daily percentage change
         daily_change_pct = (close_price - open_price) / open_price
         
         trade_result = 0
         
-        # LOGICA DI TRADING
+        # TRADING LOGIC
         if sig == 1: # LONG
-            # Guadagno se sale, perdo se scende - Commissione
+            # Profit if price goes up, loss if it goes down - Commission
             trade_result = capital * daily_change_pct
         
         elif sig == -1: # SHORT
-            # Guadagno se scende (inverso), perdo se sale - Commissione
+            # Profit if price goes down (inverse), loss if it goes up - Commission
             trade_result = capital * -daily_change_pct
 
-        # Aggiornamento Capitale
+        # Capital Update
         capital += trade_result
         equity.append(capital)
         
-        # Statistiche Win/Loss (solo se abbiamo tradato)
+        # Win/Loss Statistics (only if we traded)
         if sig != 0:
             if trade_result > 0: wins += 1
             else: losses += 1
 
-    # --- CALCOLO METRICHE FINALI ---
+    # --- FINAL METRICS CALCULATION ---
     equity = np.array(equity)
     total_profit = capital - initial_capital
     total_return = ((capital - initial_capital) / initial_capital) * 100
@@ -106,34 +108,34 @@ def backtest(path: Path, initial_capital: float = 10000):
     max_drawdown = drawdowns.min() * 100
 
     print("\n" + "="*30)
-    print(f" RISULTATI BACKTEST (D1)")
+    print(f" BACKTEST RESULTS (D1)")
     print("="*30)
-    print(f"Capitale Iniziale: ${initial_capital:.2f}")
-    print(f"Capitale Finale:   ${capital:.2f}")
-    print(f"Profitto Totale:  ${total_profit:.2f}")
-    print(f"Rendimento Totale: {total_return:.2f}%")
-    print(f"Max Drawdown:      {max_drawdown:.2f}%")
-    print(f"Trade Eseguiti:    {wins + losses}")
-    print(f"Win Rate:          {wins/(wins+losses)*100:.1f}%" if (wins+losses)>0 else "N/A")
+    print(f"Initial Capital: ${initial_capital:.2f}")
+    print(f"Final Capital:   ${capital:.2f}")
+    print(f"Total Profit:    ${total_profit:.2f}")
+    print(f"Total Return:    {total_return:.2f}%")
+    print(f"Max Drawdown:    {max_drawdown:.2f}%")
+    print(f"Trades Executed: {wins + losses}")
+    print(f"Win Rate:        {wins/(wins+losses)*100:.1f}%" if (wins+losses)>0 else "N/A")
     print("="*30)
 
-    # Confronto con Buy & Hold
+    # Comparison with Buy & Hold
     eth_start = price_data.iloc[0]['open']
     eth_end = price_data.iloc[-1]['close']
     bh_return = ((eth_end - eth_start) / eth_start) * 100
     print(f"Buy & Hold ETH:    {bh_return:.2f}%")
 
-    # --- GRAFICO ---
+    # --- PLOT ---
     plt.figure(figsize=(12, 6))
-    plt.plot(equity, label='Strategia ML (Long/Short)', color='green')
+    plt.plot(equity, label='ML Strategy (Long/Short)', color='green')
     plt.axhline(y=initial_capital, color='r', linestyle='--', alpha=0.3, label='Break Even')
     
     bh_equity = initial_capital * (1 + (price_data['close'].values - eth_start) / eth_start)
     plt.plot(bh_equity, label='Buy & Hold ETH', color='gray', alpha=0.5, linestyle='--')
 
-    plt.title('Equity Curve: Modello ML vs Buy & Hold')
-    plt.xlabel('Giorni di Trading')
-    plt.ylabel('Capitale ($)')
+    plt.title('Equity Curve: ML Model vs Buy & Hold')
+    plt.xlabel('Trading Days')
+    plt.ylabel('Capital ($)')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.show()
