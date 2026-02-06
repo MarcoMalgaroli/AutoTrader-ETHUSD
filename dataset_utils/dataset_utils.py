@@ -7,6 +7,30 @@ from models.MT5Services import MT5Services
 PRINT_WIDTH = 100
 BASE_PATH_RAW = Path("datasets", "raw")
 
+TIMEFRAMES = {
+    "M1": "1min",
+    "M2": "2min",
+    "M3": "3min",
+    "M4": "4min",
+    "M5": "5min",
+    "M6": "6min",
+    "M10": "10min",
+    "M12": "12min",
+    "M15": "15min",
+    "M20": "20min",
+    "M30": "30min",
+    "H1": "1h",
+    "H2": "2h",
+    "H3": "3h",
+    "H4": "4h",
+    "H6": "6h",
+    "H8": "8h",
+    "H12": "12h",
+    "D1": "1D",
+    "W1": "1W",
+    "MN1": "1MS",
+}
+
 def generate_dataset(mt5: MT5Services, symbol: Optional[str] = None, timeframes: List[str] = ["D1", "H1", "M15", "M5"]) -> List[Path]:
     symbol = symbol or mt5.get_selected_symbol()
     print("\n" + f" CREATING DATASET FOR {symbol} ".center(PRINT_WIDTH, "="))
@@ -66,6 +90,12 @@ def validate_dataset(path_list: Optional[List[Path]] = None, show_graph: Optiona
             if not df["time"].is_monotonic_increasing:
                 print("\x1b[91;1m X-> Data not sorted chronologically\x1b[0m")
                 ok = False
+            
+            # check if every date and time is present without gaps (for the given timeframe)
+            expected_freq = TIMEFRAMES.get(timeframe, "1D")
+            expected_times = pd.date_range(start = df["time"].iloc[0], end = df["time"].iloc[-1], freq = expected_freq)
+            if not expected_times.isin(df["time"]).all():
+                print(f"\x1b[33;1m X-> Missing timestamps detected. Expected: {len(expected_times)}, got {len(df)} (difference: {len(expected_times) - len(df)})\x1b[0m")
             
             if ok:
                 print("\x1b[92m  -> Success\x1b[0m")

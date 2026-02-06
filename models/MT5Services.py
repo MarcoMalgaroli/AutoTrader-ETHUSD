@@ -10,8 +10,8 @@ pd.set_option('display.width', 1500)      # max. table width to display
 class MT5Services:
     def __init__(self, symbol: str = "ETHUSD"):
         try:
-            self.connect_mt5()
-            self.select_mt5_symbol(symbol)
+            self.connect()
+            self.select_symbol(symbol)
         except Exception as e:
             self.shutdown()
             raise e
@@ -40,7 +40,7 @@ class MT5Services:
             "MN1": mt5.TIMEFRAME_MN1
         }
 
-    def connect_mt5(self) -> bool:
+    def connect(self) -> bool:
         """
         MetaTrader5 connection
         """
@@ -67,7 +67,7 @@ class MT5Services:
         if terminal_info is not None:
             return terminal_info._asdict()
 
-    def select_mt5_symbol(self, symbol: str = "ETHUSD") -> bool:
+    def select_symbol(self, symbol: str = "ETHUSD") -> bool:
         """
         make sure symbol is present in the Market Watch, or abort the algorithm
         """
@@ -86,18 +86,21 @@ class MT5Services:
         """
         Return selected or specified symbol info
         """
-        symbol_info = mt5.symbol_info(symbol or self.symbol)
+        s = symbol or self.symbol
+        symbol_info = mt5.symbol_info(s)
         if symbol_info is None:
-            raise Exception(f"Symbol \"{symbol}\" not found")
+            raise Exception(f"Symbol \"{s}\" not found")
         return symbol_info._asdict()
     
     def get_last_tick(self, symbol: Optional[str] = None) -> Optional[dict]:
         """
         Returns last tick of the selected or specified symbol
         """
-        last_tick = mt5.symbol_info_tick(symbol or self.symbol)
-        if last_tick is not None:
-            return last_tick._asdict()
+        s = symbol or self.symbol
+        last_tick = mt5.symbol_info_tick(s)
+        if last_tick is None:
+            raise Exception(f"Failed to get last tick for symbol \"{s}\"")
+        return last_tick._asdict()
 
     def __safe_convert_to_datetime(self, value, unit='s') -> Optional[datetime]:
         return pd.to_datetime(value, unit=unit, errors='coerce') if value != 0 else None
@@ -154,7 +157,11 @@ class MT5Services:
         pos = 0
         dfs = []
         while True:
-            rates = mt5.copy_rates_from_pos(symbol, self.timeframes[timeframe], pos, chunk)
+            try:
+                rates = self.get_historical_data_pos(symbol, timeframe, pos, chunk)
+            except Exception as e:
+                break
+
             if rates is None or len(rates) == 0:
                 break
 
@@ -165,6 +172,10 @@ class MT5Services:
             pos += len(df)
             time.sleep(0.1)
 
+        if all_df is None or len(all_df) == 0:
+            print(f"\x1b[91;1m X-> No data found for {symbol}_{timeframe} - full history\x1b[0m")
+            raise Exception(f"No data found for {symbol}_{timeframe} - full history")
+        
         all_df = pd.concat(dfs, ignore_index=True)
         all_df = all_df.sort_values("time").reset_index(drop=True)
         all_df = all_df[['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread']]
@@ -184,7 +195,7 @@ class MT5Services:
         """
         orders = mt5.orders_get()
         if orders == None:
-            raise Exception(f"No pending orders found")
+            raise Exception(f"Error retrieving active orders: {mt5.last_error()}")
         if len(orders) == 0:
             return None
         df = pd.DataFrame(list(orders), columns = orders[0]._asdict().keys())
@@ -210,7 +221,7 @@ class MT5Services:
         """
         positions = mt5.positions_get()
         if positions == None:
-            raise Exception(f"No open positions found")
+            raise Exception(f"Error retrieving active positions: {mt5.last_error()}")
         if len(positions) == 0:
             return None
 
@@ -239,7 +250,7 @@ class MT5Services:
         from_date = from_date or (to_date - timedelta(days = 1))
         orders = mt5.history_orders_get(from_date, to_date)
         if orders == None:
-            raise Exception(f"No pending orders found")
+            raise Exception(f"Error retrieving history orders: {mt5.last_error()}")
         if len(orders) == 0:
             return None
         
@@ -268,7 +279,7 @@ class MT5Services:
         from_date = from_date or (to_date - timedelta(days = 1))
         deals = mt5.history_deals_get(from_date, to_date)
         if deals == None:
-            raise Exception(f"No pending deals found")
+            raise Exception(f"Error retrieving history deals: {mt5.last_error()}")
         if len(deals) == 0:
             return None
         
@@ -278,4 +289,57 @@ class MT5Services:
         return df
     # Note: When Pending orders are processed, they become Deals. A list of deals make a Position
 
+
+    def __build_order_request(self, order_type: str, symbol: Optional[str] = None, volume: Optional[float] = 0.1, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None, deviation: int = 10, comment: str = "python script") -> dict:
+        price_info = self.get_last_tick(symbol)
+        if order_type == "BUY":
+            order_type = mt5.ORDER_TYPE_BUY
+            price = price or price_info['ask']
+            sl = sl or (price_info['bid'] - 100 * price_info['point'])
+            tp = tp or (price_info['bid'] + 100 * price_info['point'])
+        elif order_type == "SELL":
+            order_type = mt5.ORDER_TYPE_SELL
+            price = price or price_info['bid']
+            sl = sl or (price_info['ask'] + 100 * price_info['point'])
+            tp = tp or (price_info['ask'] - 100 * price_info['point'])
+        else:
+            raise ValueError(f"Invalid order_type: {order_type}")
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "magic": 112233,
+            "symbol": symbol or self.symbol,
+            "volume": volume,
+            "price": price,
+            "sl": sl,
+            "tp": tp,
+            "deviation": deviation,
+            "type": order_type,
+            "type_filling": mt5.ORDER_FILLING_RETURN,
+            "type_time": mt5.ORDER_TIME_SPECIFIED_DAY,
+            "comment": comment
+        }
+        return request
     
+    def check_order(self, order_type: str, symbol: Optional[str] = None, volume: Optional[float] = 0.1, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None, deviation: int = 10, comment: str = "python script") -> None:
+        """
+        Check order request result and raise exception on failure
+        """
+        
+        request = self.__build_order_request(order_type, symbol, volume, price, sl, tp, deviation, comment)
+
+        result = mt5.order_check(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise Exception(f"Order check failed: {result.comment} (retcode: {result.retcode})")
+        return result
+    
+    def place_order(self, order_type: str, symbol: Optional[str] = None, volume: Optional[float] = 0.1, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None, deviation: int = 10, comment: str = "python script") -> None:
+        """
+        Place an order and check the result
+        """
+        request = self.__build_order_request(order_type, symbol, volume, price, sl, tp, deviation, comment)
+
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise Exception(f"Order placement failed: {result.comment} (retcode: {result.retcode})")
+        return result
