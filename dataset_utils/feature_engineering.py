@@ -149,9 +149,9 @@ def calculate_features(path_list: Optional[List[Path]] = None, lookahead: int = 
             df_final = add_target(df_features, lookahead, atr_mult)
             print("  -> Calculated target values. Distribution:")
             targets_dist = df_final['target'].value_counts(normalize = True)
-            print(f"     SHORT: {targets_dist[-1] * 100:.2f}%")
-            print(f"     HOLD: {targets_dist[0] * 100:.2f}%")
-            print(f"     LONG: {targets_dist[1] * 100:.2f}%")
+            print(f"     SHORT: {targets_dist.get(-1, 0) * 100:.2f}%")
+            print(f"     HOLD: {targets_dist.get(0, 0) * 100:.2f}%")
+            print(f"     LONG: {targets_dist.get(1, 0) * 100:.2f}%")
 
             # remove rows with incomplete data
             initial_len = len(df_final)

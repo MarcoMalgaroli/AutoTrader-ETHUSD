@@ -46,6 +46,7 @@ class MT5Services:
         """
         if not mt5.initialize():
             raise ConnectionError(f"initialize() failed, error code = {mt5.last_error()}")
+        print("\x1b[32;1mConnected to MT5 terminal successfully.\x1b[0m")
         return True
 
     def shutdown(self) -> None:
@@ -74,6 +75,7 @@ class MT5Services:
         if not mt5.symbol_select(symbol, True):
             raise ValueError(f"Symbol {symbol} not present in Market Watch")
         self.symbol = symbol
+        print(f"\x1b[32;1mSelected symbol: {symbol}\x1b[0m")
         return True
     
     def get_selected_symbol(self) -> str:
@@ -135,14 +137,14 @@ class MT5Services:
         if timeframe not in self.timeframes:
             raise ValueError(f"Invalid timeframe ({timeframe})")
 
-        print(f"\n---> Start downloading {symbol} [{timeframe}] - {count} bars starting from {pos}")
+        print(f"    ---> Start downloading {symbol} [{timeframe}] - {count} bars starting from {pos}")
         rates = mt5.copy_rates_from_pos(symbol, self.timeframes[timeframe], pos, count)
         if rates is None or len(rates) == 0:
             raise Exception(f"No data found for {symbol}_{timeframe} - pos: {pos} - count: {count}")
         rates_frame = pd.DataFrame(rates)       
         rates_frame['time'] = pd.to_datetime(rates_frame['time'], unit = 's')
         rates_frame = rates_frame[['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread']]
-        print(f"\x1b[92m  -> Done: downloaded {len(rates)} bars\x1b[0m")
+        print(f"\x1b[92m      -> Done: downloaded {len(rates_frame)} bars\x1b[0m")
         return rates_frame
 
     def get_historical_data_all(self, symbol: Optional[str] = None, timeframe: str = "M5", chunk: int = 10000) -> Optional[pd.DataFrame]:
@@ -172,14 +174,14 @@ class MT5Services:
             pos += len(df)
             time.sleep(0.1)
 
-        if all_df is None or len(all_df) == 0:
+        if not dfs:
             print(f"\x1b[91;1m X-> No data found for {symbol}_{timeframe} - full history\x1b[0m")
             raise Exception(f"No data found for {symbol}_{timeframe} - full history")
         
         all_df = pd.concat(dfs, ignore_index=True)
         all_df = all_df.sort_values("time").reset_index(drop=True)
         all_df = all_df[['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread']]
-        print(f"\x1b[92m  -> Done: downloaded {len(all_df)} bars\x1b[0m")
+        print(f"\x1b[92;1m  -> Done: downloaded all ({len(all_df)} bars)\x1b[0m")
         return all_df
 
     # Active orders
@@ -290,56 +292,81 @@ class MT5Services:
     # Note: When Pending orders are processed, they become Deals. A list of deals make a Position
 
 
-    def __build_order_request(self, order_type: str, symbol: Optional[str] = None, volume: Optional[float] = 0.1, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None, deviation: int = 10, comment: str = "python script") -> dict:
+    def __build_order_request(self, order_type: str, position: Optional[str] = None, symbol: Optional[str] = None, volume: Optional[float] = 0.01, price: Optional[float] = None, sl_mult: Optional[float] = 0.0, tp_mult: Optional[float] = 0.0, deviation: int = 10, comment: str = "python script") -> dict:
+        symbol = symbol or self.symbol
         price_info = self.get_last_tick(symbol)
+        symbol_info = self.get_symbol_info(symbol)
+
+        if position is not None:
+            pos = self.get_active_positions()
+            pos = pos[pos['ticket'] == position].iloc[0]
+            if pos['type'] == mt5.ORDER_TYPE_BUY:
+                order_type = "SELL"
+            elif pos['type'] == mt5.ORDER_TYPE_SELL:
+                order_type = "BUY"
+            else:
+                raise ValueError(f"Invalid position type: {pos['type']}")
+                
         if order_type == "BUY":
             order_type = mt5.ORDER_TYPE_BUY
             price = price or price_info['ask']
-            sl = sl or (price_info['bid'] - 100 * price_info['point'])
-            tp = tp or (price_info['bid'] + 100 * price_info['point'])
+            sl = (price_info['bid'] - sl_mult * symbol_info['point']) if sl_mult > 0 else 0.0
+            tp = (price_info['bid'] + tp_mult * symbol_info['point']) if tp_mult > 0 else 0.0
         elif order_type == "SELL":
             order_type = mt5.ORDER_TYPE_SELL
             price = price or price_info['bid']
-            sl = sl or (price_info['ask'] + 100 * price_info['point'])
-            tp = tp or (price_info['ask'] - 100 * price_info['point'])
+            sl = (price_info['ask'] + sl_mult * symbol_info['point']) if sl_mult > 0 else 0.0
+            tp = (price_info['ask'] - tp_mult * symbol_info['point']) if tp_mult > 0 else 0.0
         else:
             raise ValueError(f"Invalid order_type: {order_type}")
+        
+        match symbol_info['filling_mode']:
+            case 1:
+                filling_mode = mt5.ORDER_FILLING_FOK
+            case 2:
+                filling_mode = mt5.ORDER_FILLING_IOC
+            case 4:
+                filling_mode = mt5.ORDER_FILLING_BOC
+            case _:
+                filling_mode = mt5.ORDER_FILLING_RETURN
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "magic": 112233,
-            "symbol": symbol or self.symbol,
+            "symbol": symbol,
             "volume": volume,
             "price": price,
             "sl": sl,
             "tp": tp,
             "deviation": deviation,
             "type": order_type,
-            "type_filling": mt5.ORDER_FILLING_RETURN,
+            "type_filling": filling_mode,
             "type_time": mt5.ORDER_TIME_SPECIFIED_DAY,
             "comment": comment
         }
+        if position is not None:
+            request["position"] = position
         return request
     
-    def check_order(self, order_type: str, symbol: Optional[str] = None, volume: Optional[float] = 0.1, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None, deviation: int = 10, comment: str = "python script") -> None:
+    def check_order(self, order_type: str, position: Optional[str] = None, symbol: Optional[str] = None, volume: Optional[float] = 0.01, price: Optional[float] = None, sl_mult: Optional[float] = 0.0, tp_mult: Optional[float] = 0.0, deviation: int = 10, comment: str = "python script") -> None:
         """
         Check order request result and raise exception on failure
         """
         
-        request = self.__build_order_request(order_type, symbol, volume, price, sl, tp, deviation, comment)
-
+        request = self.__build_order_request(order_type, position, symbol, volume, price, sl_mult, tp_mult, deviation, comment)
         result = mt5.order_check(request)
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
+        if result.retcode != mt5.TRADE_RETCODE_DONE and result.retcode != 0:
             raise Exception(f"Order check failed: {result.comment} (retcode: {result.retcode})")
         return result
     
-    def place_order(self, order_type: str, symbol: Optional[str] = None, volume: Optional[float] = 0.1, price: Optional[float] = None, sl: Optional[float] = None, tp: Optional[float] = None, deviation: int = 10, comment: str = "python script") -> None:
+    def place_order(self, order_type: str, position: Optional[str] = None, symbol: Optional[str] = None, volume: Optional[float] = 0.01, price: Optional[float] = None, sl_mult: Optional[float] = 0.0, tp_mult: Optional[float] = 0.0, deviation: int = 10, comment: str = "python script") -> None:
         """
         Place an order and check the result
         """
-        request = self.__build_order_request(order_type, symbol, volume, price, sl, tp, deviation, comment)
+        request = self.__build_order_request(order_type, position, symbol, volume, price, sl_mult, tp_mult, deviation, comment)
 
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             raise Exception(f"Order placement failed: {result.comment} (retcode: {result.retcode})")
         return result
+    

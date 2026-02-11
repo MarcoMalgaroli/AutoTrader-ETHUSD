@@ -11,16 +11,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import copy
 
+PRINT_WIDTH = 100
+
 # Check for a GPU or use CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
-
-
-# --- CONFIGURATION ---
-# FILE_NAME = Path("datasets", "final", "ETHUSD_D1_3059.csv")
-FILE_NAME = Path("datasets", "allIndicators", "ETHUSD_H1_48306.csv")
-# FILE_NAME = Path("datasets", "final", "ETHUSD_M15_176764.csv")
-# FILE_NAME = Path("datasets", "final", "ETHUSD_M5_518717.csv")
 
 SEQ_LEN = 60 # Number of time steps (candles) to look back
 BATCH_SIZE = 64
@@ -32,7 +27,7 @@ NUM_CLASSES = 3 # 0: Hold, 1: Long, 2: Short
 DROPOUT = 0.4
 
 
-# --- 1. DATA PREPARATION ---
+# --- DATA PREPARATION ---
 def create_sequences(data, target, seq_len):
     xs, ys = [], []
     for i in range(len(data) - seq_len + 1):
@@ -42,66 +37,64 @@ def create_sequences(data, target, seq_len):
         ys.append(y)
     return np.array(xs), np.array(ys)
 
-print("\n--- Loading and Preparing Data ---")
-df = pd.read_csv(FILE_NAME)
-# Select features (everything except time, target, and raw prices)
-cols_to_drop = [
-    'time', 'target', 'open', 'high', 'low', 'close',
-    'SMA_5', 'EMA_5', 'SMA_10', 'EMA_10', 'SMA_20', 'EMA_20', 'SMA_50', 'EMA_50',
-    'ATR_14', 'MACD', 'vol_SMA_20', 'tick_volume'
-]
-feature_cols = [c for c in df.columns if c not in cols_to_drop]
-print(f"Features ({len(feature_cols)}): {feature_cols}")
-print(f"Total samples in dataset: {len(df)}")
+def prepare_dataloader(file_name):
+    """
+    Prepare dataloaders for training, validation, and testing from the dataset located at file_name.
+    Args:
+        file_name (str): Path to the CSV file containing the dataset.
+    """
+    print("\n" + " LSTM TRAINING ".center(PRINT_WIDTH, "="))
+    print(f"---> Loading dataset from {file_name}...")
 
-n = len(df)
-train_end = int(n * 0.70)
-val_end = int(n * 0.85)
-train_df = df.iloc[:train_end].copy()
-val_df = df.iloc[train_end:val_end].copy()
-test_df = df.iloc[val_end:].copy()
-print(f"Training samples: {len(train_df)}")
-print(f"Validation samples: {len(val_df)}")
-print(f"Testing samples: {len(test_df)}")
+    df = pd.read_csv(file_name)
+    # Select features (everything except time, target, and raw prices)
+    cols_to_drop = [
+        'time', 'target', 'open', 'high', 'low', 'close',
+        # 'SMA_5', 'EMA_5', 'SMA_10', 'EMA_10', 'SMA_20', 'EMA_20', 'SMA_50', 'EMA_50',
+        # 'ATR_14', 'MACD', 'vol_SMA_20', 'tick_volume'
+    ]
+    feature_cols = [c for c in df.columns if c not in cols_to_drop]
+    print(f"  -> Features ({len(feature_cols)}): {feature_cols}")
+    print(f"  -> Total samples in dataset: {len(df)}")
+    df['target'] = df['target'].map({-1: 2, 0: 0, 1: 1}) # Map -1 to 2 (Short), 0 to 0 (Hold), and +1 to 1 (Long)
 
-# Scaling only on train set to avoid data leakage
-scaler = RobustScaler()
-# Train
-X_train_scaled = scaler.fit_transform(train_df[feature_cols])
-y_train_raw = train_df['target'].values
-# Validation
-X_val_scaled = scaler.transform(val_df[feature_cols])
-y_val_raw = val_df['target'].values
-# Test
-X_test_scaled = scaler.transform(test_df[feature_cols])
-y_test_raw = test_df['target'].values
+    n = len(df)
+    train_end = int(n * 0.85)
+    train_df = df.iloc[:train_end].copy()
+    test_df = df.iloc[train_end:].copy()
+    print(f"  -> Training samples: {len(train_df)}")
+    print(f"  -> Testing samples: {len(test_df)}")
 
-# Creating sequences
-X_train, y_train = create_sequences(X_train_scaled, y_train_raw, SEQ_LEN)
-X_val, y_val = create_sequences(X_val_scaled, y_val_raw, SEQ_LEN)
-X_test, y_test = create_sequences(X_test_scaled, y_test_raw, SEQ_LEN)
-print(f"Shape Input Train (number of sequences composed by {SEQ_LEN} time steps): {X_train.shape}")
-print(f"Shape Target Train:  {y_train.shape}")
-print(f"Shape Input Validation (number of sequences composed by {SEQ_LEN} time steps): {X_val.shape}")
-print(f"Shape Target Validation:  {y_val.shape}")
-print(f"Shape Input Test (number of sequences composed by {SEQ_LEN} time steps): {X_test.shape}")
-print(f"Shape Target Test:  {y_test.shape}")
+    # Scaling only on train set to avoid data leakage
+    scaler = RobustScaler()
+    # Train
+    X_train_scaled = scaler.fit_transform(train_df[feature_cols])
+    y_train_raw = train_df['target'].values
+    # Test
+    X_test_scaled = scaler.transform(test_df[feature_cols])
+    y_test_raw = test_df['target'].values
 
-# Conversion to PyTorch Tensors
-train_data = TensorDataset(torch.from_numpy(X_train).float(), torch.from_numpy(y_train).long())
-val_data = TensorDataset(torch.from_numpy(X_val).float(), torch.from_numpy(y_val).long())
-test_data = TensorDataset(torch.from_numpy(X_test).float(), torch.from_numpy(y_test).long())
-print(f"Number of training samples (each composed by {SEQ_LEN} time steps): {len(train_data)}")
-print(f"Number of validation samples (each composed by {SEQ_LEN} time steps): {len(val_data)}")
-print(f"Number of testing samples (each composed by {SEQ_LEN} time steps): {len(test_data)}")
-train_loader = DataLoader(train_data, shuffle=False, batch_size=BATCH_SIZE)
-val_loader = DataLoader(val_data, shuffle=False, batch_size=BATCH_SIZE)
-test_loader = DataLoader(test_data, shuffle=False, batch_size=BATCH_SIZE)
-print(f"Number of batches in train set (each composed by {BATCH_SIZE} samples): {len(train_loader)}")
-print(f"Number of batches in validation set (each composed by {BATCH_SIZE} samples): {len(val_loader)}")
-print(f"Number of batches in test set (each composed by {BATCH_SIZE} samples): {len(test_loader)}")
+    # Creating sequences
+    X_train, y_train = create_sequences(X_train_scaled, y_train_raw, SEQ_LEN)
+    X_test, y_test = create_sequences(X_test_scaled, y_test_raw, SEQ_LEN)
+    print(f"  -> Shape Input Train (number of sequences composed by {SEQ_LEN} time steps): {X_train.shape}")
+    print(f"  -> Shape Target Train:  {y_train.shape}")
+    print(f"  -> Shape Input Test (number of sequences composed by {SEQ_LEN} time steps): {X_test.shape}")
+    print(f"  -> Shape Target Test:  {y_test.shape}")
 
-# --- 2. THE LSTM MODEL (The Class) ---
+    # Conversion to PyTorch Tensors
+    train_data = TensorDataset(torch.from_numpy(X_train).float(), torch.from_numpy(y_train).long())
+    test_data = TensorDataset(torch.from_numpy(X_test).float(), torch.from_numpy(y_test).long())
+    print(f"  -> Number of training samples (each composed by {SEQ_LEN} time steps): {len(train_data)}")
+    print(f"  -> Number of testing samples (each composed by {SEQ_LEN} time steps): {len(test_data)}")
+    train_loader = DataLoader(train_data, shuffle=False, batch_size=BATCH_SIZE)
+    test_loader = DataLoader(test_data, shuffle=False, batch_size=BATCH_SIZE)
+    print(f"  -> Number of batches in train set (each composed by {BATCH_SIZE} samples): {len(train_loader)}")
+    print(f"  -> Number of batches in test set (each composed by {BATCH_SIZE} samples): {len(test_loader)}")
+
+    return train_loader, test_loader, scaler, feature_cols
+prepare_dataloader("datasets/final/ETHUSD_D1_3072.csv")
+# --- THE LSTM MODEL (The Class) ---
 class CryptoLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, output_size = 3, dropout_prob=0.3):
         super(CryptoLSTM, self).__init__()
@@ -116,13 +109,9 @@ class CryptoLSTM(nn.Module):
         self.fc = nn.Linear(hidden_size, output_size)
         
     def forward(self, x):
-        # Initialize hidden state and cell state to zero
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
-        
         # Forward propagate LSTM
         # out shape: (batch_size, seq_length, hidden_size)
-        out, _ = self.lstm(x, (h0.detach(), c0.detach()))
+        out, _ = self.lstm(x)
         
         # Take only the output of the last time step (the last candle)
         out = out[:, -1, :]
@@ -132,8 +121,13 @@ class CryptoLSTM(nn.Module):
         out = self.fc(out)
         return out
 
-# Model Initialization
-model = CryptoLSTM(X_train.shape[2], HIDDEN_SIZE, NUM_LAYERS, output_size = NUM_CLASSES, dropout_prob=DROPOUT).to(device)
+
+def predict(file_name):
+    # --- DATA PREPARATION ---
+    train_loader, test_loader, scaler, feature_cols = prepare_dataloader(file_name)
+
+    # Model Initialization
+    model = CryptoLSTM(X_train.shape[2], HIDDEN_SIZE, NUM_LAYERS, output_size = NUM_CLASSES, dropout_prob=DROPOUT).to(device)
 
 # Loss and Optimizer
 # 1. Calculate weights based on the frequency in the train set

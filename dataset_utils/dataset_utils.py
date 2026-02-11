@@ -95,7 +95,7 @@ def validate_dataset(path_list: Optional[List[Path]] = None, show_graph: Optiona
             expected_freq = TIMEFRAMES.get(timeframe, "1D")
             expected_times = pd.date_range(start = df["time"].iloc[0], end = df["time"].iloc[-1], freq = expected_freq)
             if not expected_times.isin(df["time"]).all():
-                print(f"\x1b[33;1m X-> Missing timestamps detected. Expected: {len(expected_times)}, got {len(df)} (difference: {len(expected_times) - len(df)})\x1b[0m")
+                print(f"\x1b[33;1m ~-> Missing timestamps detected. Expected: {len(expected_times)}, got {len(df)} (difference: {len(expected_times) - len(df)})\x1b[0m")
             
             if ok:
                 print("\x1b[92m  -> Success\x1b[0m")

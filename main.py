@@ -19,15 +19,18 @@ def main():
     print("\n" + "=" * PRINT_WIDTH + "\n")
 
     try:
-        # mt5 = MT5Services(SYMBOL) # Setup terminal connection
-        print("Connection to MT5 and dataset generation skipped for debugging purposes.")
+        mt5 = MT5Services(SYMBOL) # Setup terminal connection
+        # print("Connection to MT5 and dataset generation skipped for debugging purposes.")
     except Exception as e:
         print(f"\x1b[91;1mTerminating due to error: {e}\x1b[0m")
         return
     
-    # path_list = dataset_utils.generate_dataset(mt5, timeframes = ["D1", "H1"]) # Download datasets
+    # order = mt5.place_order("BUY", 169026007)
+    # print(f"Placed test order: {order}")
 
-    path_list = [Path('datasets/raw/ETHUSD_D1_3068.csv'), Path('datasets/raw/ETHUSD_H1_48518.csv')]
+    
+    path_list = dataset_utils.generate_dataset(mt5, timeframes = ["D1", "H1", "M15"]) # Download datasets
+    # path_list = [Path('datasets/raw/ETHUSD_D1_3068.csv'), Path('datasets/raw/ETHUSD_H1_48518.csv')]
     
     # Validate datasets
     if not dataset_utils.validate_dataset(path_list):
@@ -35,46 +38,46 @@ def main():
         return
     print("\x1b[32;1m\nDatasets validated successfully.\x1b[0m")
 
-    lookahead = 20
-    atr_mult = 1.0
+    # lookahead = 10
+    # atr_mult = 1.0
 
-    # Feature engineering
-    path_list_final = feature_engineering.calculate_features(path_list, lookahead=lookahead, atr_mult=atr_mult)
-    path_list_final = [Path('datasets/final/ETHUSD_D1_3068.csv'), Path('datasets/final/ETHUSD_H1_48518.csv')]
-    for path in path_list_final:
-        dataset_utils.plot_dataset(path, num_candles = 300, atr_mult=atr_mult)
+    # # Feature engineering
+    # path_list_final = feature_engineering.calculate_features(path_list, lookahead=lookahead, atr_mult=atr_mult)
+    # # path_list_final = [Path('datasets/final/ETHUSD_D1_3068.csv'), Path('datasets/final/ETHUSD_H1_48518.csv')]
+    # for path in path_list_final:
+    #     dataset_utils.plot_dataset(path, num_candles = 300, atr_mult=atr_mult)
 
     # Train Random Forest models
-    preds = []
-    for dataset_path in path_list_final:
-        preds.append(rf_model(dataset_path))
-    
+    # preds = []
     # for dataset_path in path_list_final:
-    #     equity_curve.backtest(dataset_path)
+    #     preds.append(rf_model(dataset_path))
     
-    initial_capital = 10000
+    # # for dataset_path in path_list_final:
+    # #     equity_curve.backtest(dataset_path)
+    
+    # initial_capital = 10000
 
-    for dataset_path in path_list_final:
-        y_pred = preds.pop(0)
-        df = pd.read_csv(dataset_path)[-len(y_pred):].reset_index(drop=True)
-        res = backtest.backtest_triple_barrier(df, y_pred, initial_capital, bet=0.1, lookahead=lookahead, atr_mult=atr_mult)
+    # for dataset_path in path_list_final:
+    #     y_pred = preds.pop(0)
+    #     df = pd.read_csv(dataset_path)[-len(y_pred):].reset_index(drop=True)
+    #     res = backtest.backtest_triple_barrier(df, y_pred, initial_capital, bet=0.1, lookahead=lookahead, atr_mult=atr_mult)
 
-        print(res.summary)
-        plt.figure(figsize=(12, 6))
-        plt.plot(res.equity_curve, label='ML Strategy (Long/Short)', color='green')
-        plt.axhline(y=initial_capital, color='r', linestyle='--', alpha=0.3, label='Break Even')
+    #     print(res.summary)
+    #     plt.figure(figsize=(12, 6))
+    #     plt.plot(res.equity_curve, label='ML Strategy (Long/Short)', color='green')
+    #     plt.axhline(y=initial_capital, color='r', linestyle='--', alpha=0.3, label='Break Even')
         
-        # bh_equity = initial_capital * (1 + (df['close'].values - df['close'].values[0]) / df['close'].values[0])
-        # plt.plot(bh_equity, label='Buy & Hold ETH', color='gray', alpha=0.5, linestyle='--')
+    #     # bh_equity = initial_capital * (1 + (df['close'].values - df['close'].values[0]) / df['close'].values[0])
+    #     # plt.plot(bh_equity, label='Buy & Hold ETH', color='gray', alpha=0.5, linestyle='--')
 
-        plt.title('Equity Curve: ML Model vs Buy & Hold')
-        plt.xlabel('Trading Days')
-        plt.ylabel('Capital ($)')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.show()
+    #     plt.title('Equity Curve: ML Model vs Buy & Hold')
+    #     plt.xlabel('Trading Days')
+    #     plt.ylabel('Capital ($)')
+    #     plt.legend()
+    #     plt.grid(True, alpha=0.3)
+    #     plt.show()
 
-    # mt5.shutdown()
+    mt5.shutdown()
 
 if __name__ == "__main__":
     main()
