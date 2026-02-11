@@ -1,5 +1,6 @@
 from backtest import equity_curve, backtest
 from machine_learning.random_forest import train_random_forest_model as rf_model
+from machine_learning.lstm import train_lstm_model as lstm_model
 from models.MT5Services import MT5Services
 from dataset_utils import dataset_utils, feature_engineering
 from pathlib import Path
@@ -7,6 +8,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # https://www.youtube.com/watch?v=kbBPD1YbYcg&list=PL0iqkWGt8zzlFU_Ds4PEPee6Zg0c11Y-t&index=4
+
+# https://github.com/Quantreo/MetaTrader-5-AUTOMATED-TRADING-using-Python/blob/main/06_money_management.ipynb
 
 
 PRINT_WIDTH = 100
@@ -19,18 +22,18 @@ def main():
     print("\n" + "=" * PRINT_WIDTH + "\n")
 
     try:
-        mt5 = MT5Services(SYMBOL) # Setup terminal connection
-        # print("Connection to MT5 and dataset generation skipped for debugging purposes.")
+        # mt5 = MT5Services(SYMBOL) # Setup terminal connection
+        print("Connection to MT5 and dataset generation skipped for debugging purposes.")
     except Exception as e:
         print(f"\x1b[91;1mTerminating due to error: {e}\x1b[0m")
         return
     
-    # order = mt5.place_order("BUY", 169026007)
+    # order = mt5.place_order("BUY")
     # print(f"Placed test order: {order}")
 
     
-    path_list = dataset_utils.generate_dataset(mt5, timeframes = ["D1", "H1", "M15"]) # Download datasets
-    # path_list = [Path('datasets/raw/ETHUSD_D1_3068.csv'), Path('datasets/raw/ETHUSD_H1_48518.csv')]
+    # path_list = dataset_utils.generate_dataset(mt5, timeframes = ["D1", "H1", "M15"]) # Download datasets
+    path_list = [Path('datasets/raw/ETHUSD_D1_3074.csv')]#, Path('datasets/raw/ETHUSD_H1_48667.csv')]#, Path('datasets/raw/ETHUSD_M15_178208.csv')]
     
     # Validate datasets
     if not dataset_utils.validate_dataset(path_list):
@@ -38,14 +41,17 @@ def main():
         return
     print("\x1b[32;1m\nDatasets validated successfully.\x1b[0m")
 
-    # lookahead = 10
-    # atr_mult = 1.0
+    lookahead = 15
+    atr_mult = 3.0
 
-    # # Feature engineering
-    # path_list_final = feature_engineering.calculate_features(path_list, lookahead=lookahead, atr_mult=atr_mult)
-    # # path_list_final = [Path('datasets/final/ETHUSD_D1_3068.csv'), Path('datasets/final/ETHUSD_H1_48518.csv')]
-    # for path in path_list_final:
-    #     dataset_utils.plot_dataset(path, num_candles = 300, atr_mult=atr_mult)
+    # Feature engineering
+    path_list_final = feature_engineering.calculate_features(path_list, lookahead=lookahead, atr_mult=atr_mult)
+    # path_list_final = [Path('datasets/final/ETHUSD_D1_3074.csv'), Path('datasets/final/ETHUSD_H1_48667.csv'), Path('datasets/final/ETHUSD_M15_178208.csv')]
+    for path in path_list_final:
+        dataset_utils.plot_dataset(path, num_candles = 300, atr_mult=atr_mult)
+    
+    for path in path_list_final:
+        lstm_model(path) # Train LSTM model on each dataset
 
     # Train Random Forest models
     # preds = []
@@ -77,7 +83,7 @@ def main():
     #     plt.grid(True, alpha=0.3)
     #     plt.show()
 
-    mt5.shutdown()
+    # mt5.shutdown()
 
 if __name__ == "__main__":
     main()
