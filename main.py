@@ -22,8 +22,8 @@ def main():
     print("\n" + "=" * PRINT_WIDTH + "\n")
 
     try:
-        # mt5 = MT5Services(SYMBOL) # Setup terminal connection
-        print("Connection to MT5 and dataset generation skipped for debugging purposes.")
+        mt5 = MT5Services(SYMBOL) # Setup terminal connection
+        # print("Connection to MT5 and dataset generation skipped for debugging purposes.")
     except Exception as e:
         print(f"\x1b[91;1mTerminating due to error: {e}\x1b[0m")
         return
@@ -32,8 +32,8 @@ def main():
     # print(f"Placed test order: {order}")
 
     
-    # path_list = dataset_utils.generate_dataset(mt5, timeframes = ["D1", "H1", "M15"]) # Download datasets
-    path_list = [Path('datasets/raw/ETHUSD_D1_3074.csv')]#, Path('datasets/raw/ETHUSD_H1_48667.csv')]#, Path('datasets/raw/ETHUSD_M15_178208.csv')]
+    path_list = dataset_utils.generate_dataset(mt5, timeframes = ["D1", "H1"]) # Download datasets
+    # path_list = [Path('datasets/raw/ETHUSD_D1_3074.csv')]#, Path('datasets/raw/ETHUSD_H1_48667.csv')]#, Path('datasets/raw/ETHUSD_M15_178208.csv')]
     
     # Validate datasets
     if not dataset_utils.validate_dataset(path_list):
