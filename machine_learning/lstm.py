@@ -1,3 +1,4 @@
+import joblib
 import pandas as pd
 import numpy as np
 import torch
@@ -18,11 +19,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"\n\x1b[36mUsing device: {device}\x1b[0m")
 
 SEQ_LEN = 20 # Number of time steps (candles) to look back
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 EPOCHS = 100
-LEARNING_RATE = 0.001
-HIDDEN_SIZE = 64
-NUM_LAYERS = 2
+LEARNING_RATE = 0.0005
+HIDDEN_SIZE = 16
+NUM_LAYERS = 3
 NUM_CLASSES = 3 # 0: Hold, 1: Long, 2: Short
 DROPOUT = 0.3
 
@@ -110,6 +111,10 @@ def prepare_dataloader(file_name):
     print(f"  -> Number of batches in train set (each composed by {BATCH_SIZE} samples): {len(train_loader)}")
     print(f"  -> Number of batches in test set (each composed by {BATCH_SIZE} samples): {len(test_loader)}")
 
+    scaler_path = Path('models/saved/scaler.gz')
+    joblib.dump(scaler, scaler_path)
+    print(f"\x1b[32;1mScaler saved to {scaler_path}\x1b[0m")
+
     return train_loader, test_loader, feature_cols, y_train
 
 
@@ -156,7 +161,9 @@ def train_lstm_model(file_name):
     optimizer = optim.Adam(model.parameters(), lr = LEARNING_RATE, weight_decay=1e-5)
 
     train(model, train_loader, test_loader, criterion, optimizer)
-    evaluate(model, test_loader)
+    targets, preds = evaluate(model, test_loader)
+    return model, targets, preds
+
 
 def train(model, train_loader, test_loader, criterion, optimizer):
     print("\n  -> Starting Training")
@@ -261,6 +268,7 @@ def evaluate(model, test_loader):
             all_targets.extend(labels.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
 
+    
     # Calculate metrics
     acc = accuracy_score(all_targets, all_preds)
     print(f"  -> Accuracy Test Set: {acc:.4f}")
@@ -281,7 +289,7 @@ def evaluate(model, test_loader):
     print(f"     Avg Confidence for winner class: {np.max(probs_np, axis=1).mean():.4f}")
     print()
 
-    threshold = 0.45 
+    threshold = 0.40
     
     for class_idx, class_name in zip([1, 2], ['Long', 'Short']):
         # select only the predictions where the probability for this class is > 60%
@@ -296,3 +304,42 @@ def evaluate(model, test_loader):
         win_rate = correct_trades / total_trades
         
         print(f"     {class_name} (> {threshold*100}% conf): {correct_trades}/{total_trades} vinti -> Win Rate: {win_rate:.2%}")
+    
+    return all_targets, pd.Series(all_preds).map({2: -1, 0: 0, 1: 1})
+
+
+def predict_last_candle(model_path, scaler_path, df_path, feature_cols):
+    """
+    Predict the action for the next candle based on the last SEQ_LEN candles.
+    """
+    model = CryptoLSTM(len(feature_cols), HIDDEN_SIZE, NUM_LAYERS, NUM_CLASSES, DROPOUT).to(device)
+    model.load_state_dict(torch.load(model_path))
+
+    scaler = joblib.load(scaler_path)
+    df = pd.read_csv(df_path)
+    
+    model.eval()
+
+    last_sequence_df = df[feature_cols].tail(SEQ_LEN)
+    
+    if len(last_sequence_df) < SEQ_LEN:
+        print("Error: Not enough candles to create a sequence!")
+        return None
+    last_sequence_scaled = scaler.transform(last_sequence_df)
+    
+    input_tensor = torch.from_numpy(last_sequence_scaled).float().unsqueeze(0).to(device)
+    
+    # Inference      
+    with torch.no_grad():
+        output = model(input_tensor)
+        probabilities = torch.softmax(output, dim=1)
+        confidence, predicted_class = torch.max(probabilities, 1)
+        
+    # Map the output (0: Hold, 1: Long, 2: Short)
+    mapping = {0: "HOLD", 1: "LONG", 2: "SHORT"}
+    
+    return {
+        "action": mapping[int(predicted_class.item())],
+        "confidence": confidence.item(),
+        "probabilities": probabilities.cpu().numpy()[0]
+    }

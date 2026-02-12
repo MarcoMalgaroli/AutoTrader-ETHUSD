@@ -57,7 +57,7 @@ def backtest_triple_barrier(df: pd.DataFrame, y_pred: Iterable[int], initial_cap
 	low_arr = df['low'].values
 	close_arr = df['close'].values
 	atr_arr = df['ATR_14'].values
-	true_arr = df['target'].values.astype(int)
+	true_arr = np.asarray(df['target'].values.astype(int))
 
 	pred_arr = np.asarray(list(y_pred), dtype=int)
 
@@ -199,7 +199,7 @@ def backtest_triple_barrier(df: pd.DataFrame, y_pred: Iterable[int], initial_cap
 	print("\x1b[92m\n  -> Backtest completed successfully\x1b[0m")
 
 	return BacktestResult(
-		equity_curve=equity,
+		equity_curve=pd.Series(equity),
 		trade_returns=trade_returns,
 		summary=summary,
 	)
