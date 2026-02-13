@@ -18,6 +18,15 @@ PRINT_WIDTH = 100
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"\n\x1b[36mUsing device: {device}\x1b[0m")
 
+def set_seed(seed=42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    # random.seed(seed) # se usi il modulo random
+    torch.backends.cudnn.deterministic = True
+
+set_seed(42)
+
 SEQ_LEN = 20 # Number of time steps (candles) to look back
 BATCH_SIZE = 32
 EPOCHS = 100
@@ -78,7 +87,8 @@ def prepare_dataloader(file_name):
     df['target'] = df['target'].map({-1: 2, 0: 0, 1: 1}) # Map -1 to 2 (Short), 0 to 0 (Hold), and +1 to 1 (Long)
 
     n = len(df)
-    train_end = int(n * 0.85)
+    # train_end = int(n * 0.85)
+    train_end = n-1
     train_df = df.iloc[:train_end].copy()
     test_df = df.iloc[train_end - SEQ_LEN + 1:].copy()
     print(f"  -> Training samples: {len(train_df)}")

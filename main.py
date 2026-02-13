@@ -2,7 +2,7 @@ import torch
 from backtest import equity_curve, backtest
 from machine_learning.random_forest import train_random_forest_model as rf_model
 import machine_learning.lstm as lstm
-# from models.MT5Services import MT5Services
+from models.MT5Services import MT5Services
 from dataset_utils import dataset_utils, feature_engineering
 from pathlib import Path
 import pandas as pd
