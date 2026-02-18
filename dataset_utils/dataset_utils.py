@@ -55,7 +55,7 @@ def generate_dataset(mt5: MT5Services, symbol: Optional[str] = None, timeframes:
             raise Exception(f"Error generating dataset for {symbol} [{tf}]: {type(e).__name__} -> {e}")
     return path_list
 
-def validate_dataset(path_list: Optional[List[Path]] = None, show_graph: Optional[bool] = False) -> bool:
+def validate_dataset(path_list: Optional[List[Path]] = None) -> bool:
     print("\n" + " VALIDATING DATASETS ".center(PRINT_WIDTH, "="))
     if not path_list:
         path_list = list(BASE_PATH_RAW.glob("*.csv"))
@@ -99,10 +99,6 @@ def validate_dataset(path_list: Optional[List[Path]] = None, show_graph: Optiona
             
             if ok:
                 print("\x1b[92m  -> Success\x1b[0m")
-                if show_graph:
-                    df.set_index('time', inplace = True)
-                    df.rename(columns = {"tick_volume": "volume"}, inplace = True)
-                    mpf.plot(df.tail(100), type = 'candle', mav = (3, 6, 9), title = f'{symbol} [{timeframe}]', volume = True)
             else:
                 flag = False
 
@@ -143,15 +139,15 @@ def plot_dataset(path: Path, num_candles: int = 200, atr_mult: float = 1.0):
                         colors.append('red')
                         colors.append('green')
 
-            return dict(alines=alines, colors=colors, linestyle = 'dotted', linewidths=3)
+            return dict(alines=alines, colors=colors, linestyle = 'dotted', linewidths=2)
 
         apds = [
             mpf.make_addplot(df['EMA_20'], color='orange', width=1),
             mpf.make_addplot(df['SMA_50'], color='blue', width=1),
             mpf.make_addplot(df['RSI_10'], color='purple', panel=1, ylabel='RSI_10'),
             mpf.make_addplot(df['ATR_14'], panel=2, color='red', ylabel='ATR_14'),
-            mpf.make_addplot(longs, type='scatter', marker='^', color='green', markersize=50),
-            mpf.make_addplot(shorts, type='scatter', marker='v', color='red', markersize=50),
+            mpf.make_addplot(longs, type='scatter', marker='^', color='#00a300', markersize=50),
+            mpf.make_addplot(shorts, type='scatter', marker='v', color='#a30000', markersize=50),
         ]
         mpf.plot(df, type = 'candle', title = f'{path.stem}', volume = True, addplot = apds, style = 'yahoo', alines = barrier_segments(df), figsize=(12, 8))
     except Exception as e:

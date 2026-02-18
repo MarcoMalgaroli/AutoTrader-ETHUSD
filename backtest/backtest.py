@@ -2,6 +2,7 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+import machine_learning.lstm as lstm
 
 PRINT_WIDTH = 100
 
@@ -12,8 +13,57 @@ class BacktestResult:
         self.trade_returns = trade_returns
         self.summary = summary
 
+def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_window: int, initial_capital: float, lookahead: int, atr_mult: float = 1.0, threshold: float = 0.4, position_size: float = 0.01) -> BacktestResult:
+	"""
+	Backtest a classifier trained with Triple Barrier labels on the last `backtest_window` samples, simulating predictions for the next `predict_window` samples.
 
-def backtest_triple_barrier(df: pd.DataFrame, y_pred: Iterable[int], initial_capital: float, bet: float, lookahead: int, atr_mult: float = 1.0) -> BacktestResult:
+	Parameters
+	----------
+	df : pd.DataFrame
+		DataFrame containing OHLC data, ATR_14, and target columns.
+		Required columns: 'open', 'high', 'low', 'close', 'ATR_14', 'target'.
+	backtest_window : int
+		Number of most recent samples to include in the backtest (e.g. 365 for 1 year of daily data).
+	predict_window : int
+		Number of future samples to simulate predictions for (e.g. 30 for 1 month).
+	initial_capital : float
+		Initial capital for the backtest.
+	lookahead : int
+		Lookahead window (number of bars) used to create the labels.
+	atr_mult : float
+		ATR multiplier for both take profit and stop loss (default 1.0).
+	threshold : float
+		Minimum predicted probability required to take a trade (default 0.4).
+	Returns
+	-------
+	BacktestResult
+		Equity curve, per-trade returns, and a summary dictionary.
+	"""
+	
+	print("\n" + " TRIPLE BARRIER BACKTEST ".center(PRINT_WIDTH, "="))
+
+	if backtest_window <= 0 or predict_window <= 0:
+		print(f"\x1b[91;1m X-> backtest_window and predict_window must be positive integers\x1b[0m")
+		raise ValueError("backtest_window and predict_window must be positive integers")
+	
+	n = len(df)
+	train_data_end = n - backtest_window
+
+	preds = []
+	probs = []
+
+	for candle in range(train_data_end, n + predict_window, predict_window):
+		print(f"\n  -> Train on (0 -> {candle}), test on ({candle - predict_window} -> {candle})")
+		simulated_df = df.iloc[:candle].copy()
+		
+		_, targets, p, pr = lstm.train_lstm_model(simulated_df, predict_window=predict_window if candle <= n else (predict_window - (candle - n)), plot_results=False)
+		preds.extend(p)
+		probs.extend(pr)
+
+	return backtest_triple_barrier_window(df.iloc[-(backtest_window + predict_window):].copy(), preds, probs, initial_capital, lookahead, atr_mult, threshold, position_size=position_size)
+
+
+def backtest_triple_barrier_window(df: pd.DataFrame, y_pred: Iterable[int], y_prob: Iterable[float], initial_capital: float, lookahead: int, atr_mult: float = 1.0, threshold: float = 0.4, commission: float = 0.001, position_size: float = 0.01) -> BacktestResult:
 	"""
 	Backtest a classifier trained with Triple Barrier labels.
 
@@ -24,22 +74,25 @@ def backtest_triple_barrier(df: pd.DataFrame, y_pred: Iterable[int], initial_cap
 		Required columns: 'open', 'high', 'low', 'close', 'ATR_14', 'target'.
 	y_pred : Iterable[int]
 		Predicted labels: -1, 0, +1.
+	y_prob : Iterable[float]
+		Predicted probabilities for each label.
 	initial_capital : float
 		Initial capital for the backtest.
-	bet : float
-		Fixed bet size per trade (as a fraction of initial capital).
 	lookahead : int
 		Lookahead window (number of bars) used to create the labels.
 	atr_mult : float
 		ATR multiplier for both take profit and stop loss (default 1.0).
-
+	threshold : float
+		Minimum predicted probability required to take a trade (default 0.4).
+	commission : float
+		Proportional transaction cost per trade (default 0.001 for 0.1%).
+	position_size : float
+		Proportion of capital to risk per trade (default 1.0 for 100%).
 	Returns
 	-------
 	BacktestResult
 		Equity curve, per-trade returns, and a summary dictionary.
 	"""
-
-	print("\n" + " BACKTEST ".center(PRINT_WIDTH, "="))
 
 	required_cols = {'open', 'high', 'low', 'close', 'ATR_14', 'target'}
 	missing_cols = required_cols - set(df.columns)
@@ -51,6 +104,10 @@ def backtest_triple_barrier(df: pd.DataFrame, y_pred: Iterable[int], initial_cap
 		print(f"\x1b[91;1m X-> lookahead must be a positive integer\x1b[0m")
 		raise ValueError("lookahead must be a positive integer")
 
+	print(f"  -> Capitale Iniziale: ${initial_capital}")
+	print(f"  -> Confidence Threshold: {threshold}")
+
+	n = len(df)
 	# Extract arrays from DataFrame
 	open_arr = df['open'].values
 	high_arr = df['high'].values
@@ -60,11 +117,14 @@ def backtest_triple_barrier(df: pd.DataFrame, y_pred: Iterable[int], initial_cap
 	true_arr = np.asarray(df['target'].values.astype(int))
 
 	pred_arr = np.asarray(list(y_pred), dtype=int)
+	probs_arr = np.asarray(list(y_prob), dtype=float)
 
-	n = len(df)
 	if pred_arr.shape[0] != n:
 		print(f"\x1b[91;1m X-> y_pred must have the same length as the DataFrame\x1b[0m")
 		raise ValueError("y_pred must have the same length as the DataFrame")
+	if probs_arr.shape[0] != n:
+		print(f"\x1b[91;1m X-> y_prob must have the same length as the DataFrame\x1b[0m")
+		raise ValueError("y_prob must have the same length as the DataFrame")
 
 	valid_labels = {-1, 0, 1}
 	if not set(np.unique(true_arr)).issubset(valid_labels):
@@ -115,7 +175,7 @@ def backtest_triple_barrier(df: pd.DataFrame, y_pred: Iterable[int], initial_cap
 			
 		# Simulate trade over lookahead window (j starts at i+1, same as labeling uses range(1, len(df)))
 		exit_price = None
-		for j in range(i + 1, min(i + lookahead + 1, n)):
+		for j in range(i + 1, min(i + lookahead + 1, len(df))):
 			high = high_arr[j]
 			low = low_arr[j]
 			open_price = open_arr[j]
@@ -160,18 +220,20 @@ def backtest_triple_barrier(df: pd.DataFrame, y_pred: Iterable[int], initial_cap
 				exit_price = close_arr[-1]
 
 		# Calculate return based on entry_price (realistic P&L from actual entry)
+		raw_return = 0.0
 		if pred_arr[i] == 1:
-			pct_change = (exit_price - entry_price) / entry_price
-			trade_returns.append(pct_change)
-			equity_change = current_capital * bet * pct_change
+			raw_return = (exit_price - entry_price) / entry_price
 		else:
-			pct_change = (entry_price - exit_price) / entry_price
-			trade_returns.append(pct_change)
-			equity_change = current_capital * bet * pct_change
+			raw_return = (entry_price - exit_price) / entry_price
+
+		net_return = raw_return - commission  # Subtract commission
+		equity_change = current_capital * position_size * net_return
 		current_capital += equity_change
+
+		trade_returns.append(net_return)
 		equity.append(current_capital)
 
-	trade_returns = pd.Series(trade_returns, name="trade_return")
+	trade_returns = pd.Series(trade_returns, name="trade_returns")
 
 	n_trades = int((pred_arr != 0).sum())
 	n_wins = int((trade_returns > 0).sum())
@@ -195,8 +257,6 @@ def backtest_triple_barrier(df: pd.DataFrame, y_pred: Iterable[int], initial_cap
 		"max_drawdown": max_drawdown,
 		"final_equity": float(equity[-1]) if len(equity) else initial_capital,
 	}
-
-	print("\x1b[92m\n  -> Backtest completed successfully\x1b[0m")
 
 	return BacktestResult(
 		equity_curve=pd.Series(equity),

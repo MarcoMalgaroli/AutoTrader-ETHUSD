@@ -17,6 +17,10 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     data = df.copy()
     data.sort_values('time', inplace = True)
+
+    data['candle_body'] = (data['close'] - data['open']) / data['open']
+    data['candle_shadow_up'] = (data['high'] - data[['close', 'open']].max(axis=1)) / data['close']
+    data['candle_shadow_low'] = (data[['close', 'open']].min(axis=1) - data['low']) / data['close']
     
     # Momentum indicators: RSI (Relative Strength Index), ROC (Rate of Change)
     for length in [5, 10, 15, 20]:

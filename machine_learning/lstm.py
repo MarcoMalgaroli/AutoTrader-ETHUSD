@@ -22,20 +22,27 @@ def set_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
-    # random.seed(seed) # se usi il modulo random
     torch.backends.cudnn.deterministic = True
 
-set_seed(42)
+# ============= H1 =============
+# SEQ_LEN = 168 # Number of time steps (candles) to look back
+# BATCH_SIZE = 32
+# EPOCHS = 100
+# LEARNING_RATE = 0.001
+# HIDDEN_SIZE = 256
+# NUM_LAYERS = 2
+# NUM_CLASSES = 3 # 0: Hold, 1: Long, 2: Short
+# DROPOUT = 0.5
 
-SEQ_LEN = 20 # Number of time steps (candles) to look back
+# ============= D1 =============
+SEQ_LEN = 60 # Number of time steps (candles) to look back
 BATCH_SIZE = 32
 EPOCHS = 100
 LEARNING_RATE = 0.0005
-HIDDEN_SIZE = 16
-NUM_LAYERS = 3
+HIDDEN_SIZE = 64
+NUM_LAYERS = 2
 NUM_CLASSES = 3 # 0: Hold, 1: Long, 2: Short
 DROPOUT = 0.3
-
 
 # --- DATA PREPARATION ---
 # Note: each row contains the target of the action to perform at the opening at the next candle
@@ -48,84 +55,72 @@ def create_sequences(data, target, seq_len):
         ys.append(y)
     return np.array(xs), np.array(ys)
 
-def prepare_dataloader(file_name):
+def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: float = 0.15):
     """
-    Prepare dataloaders for training, validation, and testing from the dataset located at file_name.
+    Prepare dataloaders for training and validation.
+    Train goes from 0 to len(df)-predict_window * (1 - val_pct), Validation goes from Train end (including SEQ_LEN-1 candles for context) to end - lookahead_days.
     Args:
-        file_name (str): Path to the CSV file containing the dataset.
+        data (pd.DataFrame): The dataset as a pandas DataFrame.
+        lookahead_days (int): Number of days that does not have a meaningful label (i.e., the last lookahead_days candles are not used for training).
+        val_pct (float): Percentage of the data to use for validation (e.g., 0.15 for 15%).
     """
-    print(f"---> Loading dataset from {file_name}...")
 
-    df = pd.read_csv(file_name)
-
-    # Select features (everything except time, target, and raw prices)
-    # cols_to_drop = [
-    #     'time', 'target', 'open', 'high', 'low', 'close', 'tick_volume', 'spread',
-    #     'SMA_5', 'EMA_5', 'SMA_10', 'EMA_10', 'SMA_20', 'EMA_20', 'SMA_50', 'EMA_50',
-    #     'ATR_14', 'MACD', 'vol_SMA_20',
-    #     'RSI_5', 'RSI_10', 'RSI_20', # keep only RSI 15
-    #     'dist_SMA_5', 'dist_EMA_5',
-    #     'dist_SMA_10', 'dist_EMA_10',
-    #     'dist_EMA_20', 'dist_EMA_50',
-    #     'KC_width_pct', 'KC_pct'
-    # ]
-    # feature_cols = [c for c in df.columns if c not in cols_to_drop]
+    df = data.copy()
+    df['target'] = df['target'].map({-1: 2, 0: 0, 1: 1}) # Map -1 to 2 (Short), 0 to 0 (Hold), and +1 to 1 (Long)
+    print(f"---> Loading dataset from DataFrame with shape {df.shape}...")
 
     feature_cols = [
-        'RSI_15',          # Momentum classico
-        'dist_SMA_20',     # Mean Reversion (distanza dalla media)
-        'dist_SMA_50',     # Trend di medio termine
-        'MACD_norm',       # Trend momentum
-        'ATR_norm',        # Volatilità
-        'BB_width_pct',    # Compressione/Esplosione volatilità
-        'OBV_pct',         # Pressione volumetrica
-        'log_ret',         # Rendimento logaritmico (il movimento puro)
+        'candle_body', 'candle_shadow_up', 'candle_shadow_low',
+        'RSI_15', 'dist_SMA_20', 'dist_SMA_50', 'MACD_norm',
+        'ATR_norm', 'BB_width_pct', 'OBV_pct', 'log_ret',
     ]
 
     print(f"  -> Features ({len(feature_cols)}): {feature_cols}")
     print(f"  -> Total samples in dataset: {len(df)}")
-    df['target'] = df['target'].map({-1: 2, 0: 0, 1: 1}) # Map -1 to 2 (Short), 0 to 0 (Hold), and +1 to 1 (Long)
 
-    n = len(df)
-    # train_end = int(n * 0.85)
-    train_end = n-1
-    train_df = df.iloc[:train_end].copy()
-    test_df = df.iloc[train_end - SEQ_LEN + 1:].copy()
-    print(f"  -> Training samples: {len(train_df)}")
-    print(f"  -> Testing samples: {len(test_df)}")
+    valid_data_end = len(df) - lookahead_days
+    labeled_df = df.iloc[:valid_data_end].copy()
+    
+    split_idx = int(len(labeled_df) * (1 - val_pct))
+
+    train_df = labeled_df.iloc[:split_idx].copy()
+    
+    val_df = labeled_df.iloc[split_idx - SEQ_LEN + 1:].copy()
+    print(f"  -> Training samples: {len(train_df)}, from {train_df.index[0]} to {train_df.index[-1]}")
+    print(f"  -> Validation samples: {len(val_df)}, from {val_df.index[0]} to {val_df.index[-1]} (including {SEQ_LEN-1} candles for context)")
 
     # Scaling only on train set to avoid data leakage
     scaler = RobustScaler()
+    scaler.fit(train_df[feature_cols])
+
     # Train
-    X_train_scaled = scaler.fit_transform(train_df[feature_cols])
-    y_train_raw = train_df['target'].values
-    # Test
-    X_test_scaled = scaler.transform(test_df[feature_cols])
-    y_test_raw = test_df['target'].values
+    X_train_scaled = scaler.transform(train_df[feature_cols])
+    y_train = train_df['target'].values
+    
+    # Validation
+    X_val_scaled = scaler.transform(val_df[feature_cols])
+    y_val = val_df['target'].values
 
     # Creating sequences
-    X_train, y_train = create_sequences(X_train_scaled, y_train_raw, SEQ_LEN)
-    X_test, y_test = create_sequences(X_test_scaled, y_test_raw, SEQ_LEN)
-    print(f"  -> Shape Input Train (number of sequences composed by {SEQ_LEN} time steps): {X_train.shape}")
-    print(f"  -> Shape Target Train:  {y_train.shape}")
-    print(f"  -> Shape Input Test (number of sequences composed by {SEQ_LEN} time steps): {X_test.shape}")
-    print(f"  -> Shape Target Test:  {y_test.shape}")
+    X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train, SEQ_LEN)
+    X_val_seq, y_val_seq = create_sequences(X_val_scaled, y_val, SEQ_LEN)
+    print(f"  -> Shape Input Train (number of sequences composed by {SEQ_LEN} time steps): {X_train_seq.shape}")
+    print(f"  -> Shape Target Train:  {y_train_seq.shape}")
+    print(f"  -> Shape Input Val (number of sequences composed by {SEQ_LEN} time steps): {X_val_seq.shape}")
+    print(f"  -> Shape Target Val:  {y_val_seq.shape}")
 
     # Conversion to PyTorch Tensors
-    train_data = TensorDataset(torch.from_numpy(X_train).float(), torch.from_numpy(y_train).long())
-    test_data = TensorDataset(torch.from_numpy(X_test).float(), torch.from_numpy(y_test).long())
+    train_data = TensorDataset(torch.from_numpy(X_train_seq).float(), torch.from_numpy(y_train_seq).long())
     print(f"  -> Number of training samples (each composed by {SEQ_LEN} time steps): {len(train_data)}")
-    print(f"  -> Number of testing samples (each composed by {SEQ_LEN} time steps): {len(test_data)}")
+    val_data = TensorDataset(torch.from_numpy(X_val_seq).float(), torch.from_numpy(y_val_seq).long())
+    print(f"  -> Number of validation samples (each composed by {SEQ_LEN} time steps): {len(val_data)}")
+    
     train_loader = DataLoader(train_data, shuffle=True, batch_size=BATCH_SIZE)
-    test_loader = DataLoader(test_data, shuffle=False, batch_size=BATCH_SIZE)
     print(f"  -> Number of batches in train set (each composed by {BATCH_SIZE} samples): {len(train_loader)}")
-    print(f"  -> Number of batches in test set (each composed by {BATCH_SIZE} samples): {len(test_loader)}")
+    val_loader = DataLoader(val_data, shuffle=False, batch_size=BATCH_SIZE)
+    print(f"  -> Number of batches in val set (each composed by {BATCH_SIZE} samples): {len(val_loader)}")
 
-    scaler_path = Path('models/saved/scaler.gz')
-    joblib.dump(scaler, scaler_path)
-    print(f"\x1b[32;1mScaler saved to {scaler_path}\x1b[0m")
-
-    return train_loader, test_loader, feature_cols, y_train
+    return train_loader, val_loader, feature_cols, scaler, y_train
 
 
 # --- THE LSTM MODEL ---
@@ -153,10 +148,13 @@ class CryptoLSTM(nn.Module):
         return out
 
 
-def train_lstm_model(file_name):
+def train_lstm_model(df: pd.DataFrame, lookahead_days=10, plot_results=True):
     print("\n" + " LSTM TRAINING ".center(PRINT_WIDTH, "="))
+    
+    set_seed(42)
+    
     # --- DATA PREPARATION ---
-    train_loader, test_loader, feature_cols, y_train = prepare_dataloader(file_name)
+    train_loader, val_loader, feature_cols, scaler, y_train = prepare_dataloader(df, lookahead_days=lookahead_days, val_pct=0.15)
 
     # Model Initialization
     model = CryptoLSTM(len(feature_cols), HIDDEN_SIZE, NUM_LAYERS, output_size = NUM_CLASSES, dropout_prob=DROPOUT).to(device)
@@ -170,18 +168,16 @@ def train_lstm_model(file_name):
     criterion = nn.CrossEntropyLoss(weight=class_weights) # Cross Entropy Loss for multi-class classification
     optimizer = optim.Adam(model.parameters(), lr = LEARNING_RATE, weight_decay=1e-5)
 
-    train(model, train_loader, test_loader, criterion, optimizer)
-    targets, preds = evaluate(model, test_loader)
-    return model, targets, preds
+    train(model, train_loader, val_loader, criterion, optimizer, plot_results=plot_results)
+    return model, scaler, feature_cols
 
 
-def train(model, train_loader, test_loader, criterion, optimizer):
+def train(model, train_loader, val_loader, criterion, optimizer, plot_results=True):
     print("\n  -> Starting Training")
 
-    best_acc = 0.0
-    patience = 15
+    best_loss = float('inf')
+    patience = 10
     trigger_times = 0
-    
     best_model_wts = copy.deepcopy(model.state_dict())
 
     train_losses = []
@@ -209,53 +205,54 @@ def train(model, train_loader, test_loader, criterion, optimizer):
         avg_train_loss = running_loss / len(train_loader)
         train_losses.append(avg_train_loss)
 
-        # validation
+        # Evaluate on validation set
         model.eval()
-        val_loss = 0.0
+        running_val_loss = 0.0
         correct = 0
         total = 0
         with torch.no_grad():
-            for inputs, labels in test_loader:
+            for inputs, labels in val_loader:
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
-                val_loss += loss.item()
-                
+                running_val_loss += loss.item()
+
+                # Calculate accuracy
                 _, predicted = torch.max(outputs, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
-        
-        avg_val_loss = val_loss / len(test_loader)
+        avg_val_loss = running_val_loss / len(val_loader)
         val_losses.append(avg_val_loss)
-        val_acc = correct / total
+        val_acc = correct / total if total > 0 else 0
 
-        print(f"  -> Epoch: {epoch:02d} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.4f}", end="")
+        print(f"  -> Epoch: {epoch+1:03d}/{EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.4f}", end="")
 
         # --- EARLY STOPPING LOGIC ---
-        if val_acc > best_acc:
-            best_acc = val_acc
+        if avg_val_loss < best_loss:
+            best_loss = avg_val_loss
             best_model_wts = copy.deepcopy(model.state_dict())
-            trigger_times = 0 # Reset pazienza
+            trigger_times = 0 # Reset patience
             print(" | * New best model")
         else:
             trigger_times += 1
-            print(f" | Trigger Times: {trigger_times}/{patience}")
+            print(f" | Patience: {trigger_times}/{patience}")
             if trigger_times >= patience:
-                print(f"\n  -> Early stopping! Best Accuracy was: {best_acc:.4f}")
+                print(f"\n  -> Early stopping! Best Validation Loss was: {best_loss:.4f}. Best Accuracy was: {val_acc:.4f}")
                 break
 
     # Load best model weights
     model.load_state_dict(best_model_wts)
 
     # Plot loss over epochs
-    plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Training Loss')
-    plt.plot(val_losses, label='Validation Loss', linestyle='--')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training Loss VS Validation Loss Over Epochs')
-    plt.legend()
-    plt.show()
+    if plot_results:
+        plt.figure(figsize=(10, 5))
+        plt.plot(train_losses, label='Training Loss')
+        plt.plot(val_losses, label='Validation Loss', linestyle='--')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Loss Over Epochs')
+        plt.legend()
+        plt.show()
 
 def evaluate(model, test_loader):
     print("\n  -> Evaluating on Test Set")
@@ -283,9 +280,9 @@ def evaluate(model, test_loader):
     acc = accuracy_score(all_targets, all_preds)
     print(f"  -> Accuracy Test Set: {acc:.4f}")
     print("\n  -> Detailed Report:")
-    print(classification_report(all_targets, all_preds, labels = [0, 1, 2], target_names = ['Hold', 'Long', 'Short']))
+    print(classification_report(all_targets, all_preds, labels = [0, 1, 2], target_names = ['Hold', 'Long', 'Short'], zero_division=0))
     # Confusion Matrix
-    cm = confusion_matrix(all_targets, all_preds)
+    cm = confusion_matrix(all_targets, all_preds, labels = [0, 1, 2])
     print("  -> Confusion Matrix:")
     print(cm)
 
@@ -315,41 +312,29 @@ def evaluate(model, test_loader):
         
         print(f"     {class_name} (> {threshold*100}% conf): {correct_trades}/{total_trades} vinti -> Win Rate: {win_rate:.2%}")
     
-    return all_targets, pd.Series(all_preds).map({2: -1, 0: 0, 1: 1})
+    return pd.Series(all_targets).map({2: -1, 0: 0, 1: 1}), pd.Series(all_preds).map({2: -1, 0: 0, 1: 1}), probs_np[:, [2, 0, 1]]
 
 
-def predict_last_candle(model_path, scaler_path, df_path, feature_cols):
+def predict_next_move(model, df, feature_cols, scaler):
     """
     Predict the action for the next candle based on the last SEQ_LEN candles.
     """
-    model = CryptoLSTM(len(feature_cols), HIDDEN_SIZE, NUM_LAYERS, NUM_CLASSES, DROPOUT).to(device)
-    model.load_state_dict(torch.load(model_path))
-
-    scaler = joblib.load(scaler_path)
-    df = pd.read_csv(df_path)
-    
     model.eval()
-
-    last_sequence_df = df[feature_cols].tail(SEQ_LEN)
     
-    if len(last_sequence_df) < SEQ_LEN:
-        print("Error: Not enough candles to create a sequence!")
-        return None
-    last_sequence_scaled = scaler.transform(last_sequence_df)
+    # Take last SEQ_LEN rows to create the only important sequence: the one that will be used to predict the next move
+    recent_data = df.iloc[-SEQ_LEN:][feature_cols].copy()
+    if len(recent_data) < SEQ_LEN:
+        raise ValueError(f"Not enough data for prediction. Needed {SEQ_LEN} candles, got {len(recent_data)}")
     
-    input_tensor = torch.from_numpy(last_sequence_scaled).float().unsqueeze(0).to(device)
+    # Scale the features using the same scaler fitted on the training data
+    recent_data_scaled = scaler.transform(recent_data)
     
-    # Inference      
+    # Crea il tensore (Batch=1, Seq=60, Features=...)
+    input_tensor = torch.tensor(recent_data_scaled).unsqueeze(0).float().to(device)    
+    
     with torch.no_grad():
         output = model(input_tensor)
-        probabilities = torch.softmax(output, dim=1)
-        confidence, predicted_class = torch.max(probabilities, 1)
+        probs = torch.softmax(output, dim=1)
         
-    # Map the output (0: Hold, 1: Long, 2: Short)
-    mapping = {0: "HOLD", 1: "LONG", 2: "SHORT"}
-    
-    return {
-        "action": mapping[int(predicted_class.item())],
-        "confidence": confidence.item(),
-        "probabilities": probabilities.cpu().numpy()[0]
-    }
+    # Restituisce le probabilità [Hold, Long, Short]
+    return probs.cpu().numpy()[0]
