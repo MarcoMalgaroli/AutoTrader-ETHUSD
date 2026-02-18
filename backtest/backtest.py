@@ -2,6 +2,7 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+import torch
 import machine_learning.lstm as lstm
 
 PRINT_WIDTH = 100
@@ -13,8 +14,33 @@ class BacktestResult:
         self.trade_returns = trade_returns
         self.summary = summary
 
-def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_window: int, initial_capital: float, lookahead: int, atr_mult: float = 1.0, threshold: float = 0.4, position_size: float = 0.01) -> BacktestResult:
-	"""
+
+def batch_predict(model, df, feature_cols, scaler, seq_len, start_idx, end_idx):
+    """Execute batch prediction to speed up backtesting."""
+    model.eval()
+    sequences = []
+    valid_indices = []
+    
+    for i in range(start_idx, end_idx):
+        if i < seq_len: continue
+        seq_data = df.iloc[i - seq_len + 1 : i + 1][feature_cols].copy()
+        seq_scaled = scaler.transform(seq_data)
+        sequences.append(seq_scaled)
+        valid_indices.append(i)
+
+    if not sequences:
+        return [], [], []
+
+    X_batch = torch.FloatTensor(np.array(sequences)).to(lstm.device)
+    with torch.no_grad():
+        outputs = model(X_batch)
+        probs = torch.softmax(outputs, dim=1)
+        _, preds = torch.max(outputs, 1)
+        
+    return preds.cpu().numpy(), probs.cpu().numpy(), valid_indices
+
+def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_window: int, initial_capital: float, lookahead: int, atr_mult: float = 1.0, threshold: float = 0.34, position_size: float = 0.1):
+    """
 	Backtest a classifier trained with Triple Barrier labels on the last `backtest_window` samples, simulating predictions for the next `predict_window` samples.
 
 	Parameters
@@ -33,67 +59,77 @@ def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_wind
 	atr_mult : float
 		ATR multiplier for both take profit and stop loss (default 1.0).
 	threshold : float
-		Minimum predicted probability required to take a trade (default 0.4).
-	Returns
-	-------
-	BacktestResult
-		Equity curve, per-trade returns, and a summary dictionary.
-	"""
-	
-	print("\n" + " TRIPLE BARRIER BACKTEST ".center(PRINT_WIDTH, "="))
-
-	if backtest_window <= 0 or predict_window <= 0:
-		print(f"\x1b[91;1m X-> backtest_window and predict_window must be positive integers\x1b[0m")
-		raise ValueError("backtest_window and predict_window must be positive integers")
-	
-	n = len(df)
-	train_data_end = n - backtest_window
-
-	preds = []
-	probs = []
-
-	for candle in range(train_data_end, n + predict_window, predict_window):
-		print(f"\n  -> Train on (0 -> {candle}), test on ({candle - predict_window} -> {candle})")
-		simulated_df = df.iloc[:candle].copy()
-		
-		_, targets, p, pr = lstm.train_lstm_model(simulated_df, predict_window=predict_window if candle <= n else (predict_window - (candle - n)), plot_results=False)
-		preds.extend(p)
-		probs.extend(pr)
-
-	return backtest_triple_barrier_window(df.iloc[-(backtest_window + predict_window):].copy(), preds, probs, initial_capital, lookahead, atr_mult, threshold, position_size=position_size)
-
-
-def backtest_triple_barrier_window(df: pd.DataFrame, y_pred: Iterable[int], y_prob: Iterable[float], initial_capital: float, lookahead: int, atr_mult: float = 1.0, threshold: float = 0.4, commission: float = 0.001, position_size: float = 0.01) -> BacktestResult:
-	"""
-	Backtest a classifier trained with Triple Barrier labels.
-
-	Parameters
-	----------
-	df : pd.DataFrame
-		DataFrame containing OHLC data, ATR_14, and target columns.
-		Required columns: 'open', 'high', 'low', 'close', 'ATR_14', 'target'.
-	y_pred : Iterable[int]
-		Predicted labels: -1, 0, +1.
-	y_prob : Iterable[float]
-		Predicted probabilities for each label.
-	initial_capital : float
-		Initial capital for the backtest.
-	lookahead : int
-		Lookahead window (number of bars) used to create the labels.
-	atr_mult : float
-		ATR multiplier for both take profit and stop loss (default 1.0).
-	threshold : float
-		Minimum predicted probability required to take a trade (default 0.4).
-	commission : float
-		Proportional transaction cost per trade (default 0.001 for 0.1%).
+		Minimum predicted probability required to take a trade (default 0.34).
 	position_size : float
-		Proportion of capital to risk per trade (default 1.0 for 100%).
-	Returns
-	-------
-	BacktestResult
-		Equity curve, per-trade returns, and a summary dictionary.
+		Proportion of capital to risk per trade (default 0.1 for 10%).
 	"""
 
+
+    print("\n" + " WALK-FORWARD BACKTEST ".center(PRINT_WIDTH, "="))
+    n = len(df)
+    start_point = n - backtest_window
+    
+    if start_point < lstm.SEQ_LEN + lookahead:
+        raise ValueError("Dataset too short for the backtest_window and lookahead requested.")
+
+    all_preds = np.zeros(n, dtype=int)
+    all_probs = np.zeros((n, 3), dtype=float)
+    prediction_mask = np.zeros(n, dtype=bool)
+
+    # --- WALK-FORWARD CICLE ---
+    for candle in range(start_point, n, predict_window):
+        end_window = min(candle + predict_window, n)
+        print(f"\n  -> Simulation: Train on data until index {candle} | Test: {candle}->{end_window}")
+        
+        # 1. Train on "Known past"
+        current_train_df = df.iloc[:candle].copy()
+        
+        # Train internally manage Train/Val split using tail of current_train_df
+        model, scaler, feature_cols = lstm.train_lstm_model(
+            current_train_df, 
+            lookahead_days=0 if candle < n - lookahead else lookahead,
+            plot_results=False
+        )
+        
+        # 2. Predict on "Future unseen"
+        preds, probs, indices = batch_predict(
+            model, df, feature_cols, scaler, lstm.SEQ_LEN, 
+            start_idx=candle, end_idx=end_window
+        )
+        
+        if len(indices) > 0:
+            all_preds[indices] = preds
+            all_probs[indices] = probs
+            prediction_mask[indices] = True
+            
+    # --- EQUITY CALCULATION ---
+    final_preds = np.zeros(n, dtype=int)
+    
+    for i in np.where(prediction_mask)[0]:
+        cls = all_preds[i]
+        prob = all_probs[i, cls]
+        
+        if prob < threshold:
+            final_preds[i] = 0 # Hold if low confidence
+        else:
+            # Mapping from LSTM Classes (0:Hold, 1:Long, 2:Short) to Signals (-1, 0, 1)
+            if cls == 1: final_preds[i] = 1
+            elif cls == 2: final_preds[i] = -1
+            else: final_preds[i] = 0
+
+    backtest_slice = slice(start_point, n)
+    
+    return backtest_calc_equity(
+        df.iloc[backtest_slice].copy(),
+        final_preds[backtest_slice],
+        initial_capital,
+        lookahead,
+        atr_mult,
+        position_size=position_size
+    )
+
+def backtest_calc_equity(df: pd.DataFrame, pred_arr: np.ndarray, initial_capital: float, lookahead: int, atr_mult: float, position_size: float):
+	"""Calculate equity curve given the signals."""
 	required_cols = {'open', 'high', 'low', 'close', 'ATR_14', 'target'}
 	missing_cols = required_cols - set(df.columns)
 	if missing_cols:
@@ -104,8 +140,7 @@ def backtest_triple_barrier_window(df: pd.DataFrame, y_pred: Iterable[int], y_pr
 		print(f"\x1b[91;1m X-> lookahead must be a positive integer\x1b[0m")
 		raise ValueError("lookahead must be a positive integer")
 
-	print(f"  -> Capitale Iniziale: ${initial_capital}")
-	print(f"  -> Confidence Threshold: {threshold}")
+	print(f"  -> Initial Capital: ${initial_capital}")
 
 	n = len(df)
 	# Extract arrays from DataFrame
@@ -116,15 +151,9 @@ def backtest_triple_barrier_window(df: pd.DataFrame, y_pred: Iterable[int], y_pr
 	atr_arr = df['ATR_14'].values
 	true_arr = np.asarray(df['target'].values.astype(int))
 
-	pred_arr = np.asarray(list(y_pred), dtype=int)
-	probs_arr = np.asarray(list(y_prob), dtype=float)
-
 	if pred_arr.shape[0] != n:
 		print(f"\x1b[91;1m X-> y_pred must have the same length as the DataFrame\x1b[0m")
 		raise ValueError("y_pred must have the same length as the DataFrame")
-	if probs_arr.shape[0] != n:
-		print(f"\x1b[91;1m X-> y_prob must have the same length as the DataFrame\x1b[0m")
-		raise ValueError("y_prob must have the same length as the DataFrame")
 
 	valid_labels = {-1, 0, 1}
 	if not set(np.unique(true_arr)).issubset(valid_labels):
@@ -147,7 +176,6 @@ def backtest_triple_barrier_window(df: pd.DataFrame, y_pred: Iterable[int], y_pr
 			trade_returns.append(0.0)
 			continue
 		
-		# IMPORTANT: Use close price as reference for barriers (same as feature_engineering labeling)
 		# The signal is generated at close[i], barriers are calculated from close[i]
 		signal_price = close_arr[i]
 		atr = atr_arr[i]
@@ -226,7 +254,7 @@ def backtest_triple_barrier_window(df: pd.DataFrame, y_pred: Iterable[int], y_pr
 		else:
 			raw_return = (entry_price - exit_price) / entry_price
 
-		net_return = raw_return - commission  # Subtract commission
+		net_return = raw_return - 0.001  # Subtract commission (assuming 0.1% commission)
 		equity_change = current_capital * position_size * net_return
 		current_capital += equity_change
 

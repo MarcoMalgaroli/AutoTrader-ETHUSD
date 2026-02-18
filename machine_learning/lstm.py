@@ -40,7 +40,7 @@ BATCH_SIZE = 32
 EPOCHS = 100
 LEARNING_RATE = 0.0005
 HIDDEN_SIZE = 64
-NUM_LAYERS = 2
+NUM_LAYERS = 3
 NUM_CLASSES = 3 # 0: Hold, 1: Long, 2: Short
 DROPOUT = 0.3
 
@@ -176,7 +176,8 @@ def train(model, train_loader, val_loader, criterion, optimizer, plot_results=Tr
     print("\n  -> Starting Training")
 
     best_loss = float('inf')
-    patience = 10
+    best_val_acc = 0.0
+    patience = 15
     trigger_times = 0
     best_model_wts = copy.deepcopy(model.state_dict())
 
@@ -228,8 +229,10 @@ def train(model, train_loader, val_loader, criterion, optimizer, plot_results=Tr
         print(f"  -> Epoch: {epoch+1:03d}/{EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.4f}", end="")
 
         # --- EARLY STOPPING LOGIC ---
-        if avg_val_loss < best_loss:
+        # if avg_val_loss < best_loss:
+        if best_val_acc == 0 or val_acc > best_val_acc:
             best_loss = avg_val_loss
+            best_val_acc = val_acc
             best_model_wts = copy.deepcopy(model.state_dict())
             trigger_times = 0 # Reset patience
             print(" | * New best model")
@@ -237,7 +240,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, plot_results=Tr
             trigger_times += 1
             print(f" | Patience: {trigger_times}/{patience}")
             if trigger_times >= patience:
-                print(f"\n  -> Early stopping! Best Validation Loss was: {best_loss:.4f}. Best Accuracy was: {val_acc:.4f}")
+                print(f"\n  -> Early stopping! Best Validation Loss was: {best_loss:.4f}. Best Accuracy was: {best_val_acc:.4f}")
                 break
 
     # Load best model weights

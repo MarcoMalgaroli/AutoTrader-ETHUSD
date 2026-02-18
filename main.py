@@ -1,3 +1,4 @@
+import numpy as np
 from backtest import backtest
 from machine_learning.random_forest import train_random_forest_model as rf_model
 import machine_learning.lstm as lstm
@@ -48,57 +49,52 @@ def main():
     # Feature engineering
     path_list_final = feature_engineering.calculate_features(path_list, lookahead=lookahead, atr_mult=atr_mult)
     
-    # for path in path_list_final:
-    #     dataset_utils.plot_dataset(path, num_candles = 300, atr_mult=atr_mult)
+    for path in path_list_final:
+        dataset_utils.plot_dataset(path, num_candles = 300, atr_mult=atr_mult)
     
     for path in path_list_final:
+        print("\n" + " LIVE PREDICTION ".center(PRINT_WIDTH, "="))
         df = pd.read_csv(path)
-        df = df.iloc[:-(lookahead + 23)].copy()
-        print(df)
+        print(df.tail(5))
         model, scaler, feature_cols = lstm.train_lstm_model(df, lookahead_days=lookahead) # Train LSTM model on each dataset
 
         # PREDICT NEXT CANDLE
-        print("\n" + " LIVE PREDICTION ".center(PRINT_WIDTH, "="))
-        last_probs = lstm.predict_next_move(model, df, feature_cols, scaler)
+        probs = lstm.predict_next_move(model, df, feature_cols, scaler)
 
         print(f"Probabilities for next candle (closing 'now' candle):")
-        print(f"HOLD:  {last_probs[0]:.4f}")
-        print(f"LONG:  {last_probs[1]:.4f}")
-        print(f"SHORT: {last_probs[2]:.4f}")
+        print(f"HOLD:  {probs[0]:.4f}")
+        print(f"LONG:  {probs[1]:.4f}")
+        print(f"SHORT: {probs[2]:.4f}")
 
-        threshold = 0.34
-        m = max(last_probs)
-        if last_probs[1] > threshold and last_probs[1] == m:
-            print(">>> ACTION: OPEN LONG")
-        elif last_probs[2] > threshold and last_probs[2] == m:
-            print(">>> ACTION: OPEN SHORT")
-        else:
-            print(">>> ACTION: HOLD / NO TRADE")
-        print(f"REAL: {df.iloc[-1]['target']}, CLOSE: {df.iloc[-1]['close']}")
+        best_action = np.argmax(probs)
+        actions = ["HOLD", "LONG", "SHORT"]
+        
+        print(f"\n>>> CONSIGLIO AI: {actions[best_action]} (Confidenza: {probs[best_action]:.2%})")
+        print(f"  > REAL: {df.iloc[-1]['target']}, CLOSE: {df.iloc[-1]['close']}")
     
     
-    # backtest_window = 365
-    # predict_window = 30
-    # initial_capital = 100000
-    # df = pd.read_csv(path_list_final[0])
-    # res = backtest.backtest_triple_barrier(df, backtest_window, predict_window, initial_capital, lookahead, atr_mult, position_size=0.1)
+    backtest_window = 30 * 6 # Backtest on last 6 months of daily data (180 candles)
+    predict_window = 30
+    initial_capital = 100000
+    df = pd.read_csv(path_list_final[0])
+    res = backtest.backtest_triple_barrier(df, backtest_window, predict_window, initial_capital, lookahead, atr_mult, position_size=0.1)
     
+    print("\n" + " BACKTEST RESULTS ".center(PRINT_WIDTH, "="))
+    print(res.summary)
 
-    # plt.figure(figsize=(12, 6))
-    # plt.plot(res.equity_curve, label='ML Strategy (Long/Short)', color='green')
-    # plt.axhline(y=initial_capital, color='r', linestyle='--', alpha=0.3, label='Break Even')
+    plt.figure(figsize=(12, 6))
+    plt.plot(res.equity_curve, label='ML Strategy (Long/Short)', color='green')
+    plt.axhline(y=initial_capital, color='r', linestyle='--', alpha=0.3, label='Break Even')
     
     # bh_equity = initial_capital * (1 + (df['close'].values[-(backtest_window + predict_window):] - df['close'].values[-(backtest_window + predict_window)]) / df['close'].values[-(backtest_window + predict_window)])
     # plt.plot(bh_equity, label='Buy & Hold ETH', color='gray', alpha=0.5, linestyle='--')
 
-    # plt.title('Equity Curve: ML Model vs Buy & Hold')
-    # plt.xlabel('Trading Days')
-    # plt.ylabel('Capital ($)')
-    # plt.legend()
-    # plt.grid(True, alpha=0.3)
-    # plt.show()
-    
-    # print(res.summary)
+    plt.title('Equity Curve: ML Model vs Buy & Hold')
+    plt.xlabel('Trading Days')
+    plt.ylabel('Capital ($)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.show()
     
     # mt5.shutdown()
 
