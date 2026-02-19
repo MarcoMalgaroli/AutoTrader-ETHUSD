@@ -5,3 +5,7 @@ matplotlib
 mplfinance
 scikit-learn
 torch
+fastapi
+uvicorn[standard]
+jinja2
+apscheduler

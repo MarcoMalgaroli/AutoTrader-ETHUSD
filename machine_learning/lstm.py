@@ -39,10 +39,10 @@ SEQ_LEN = 60 # Number of time steps (candles) to look back
 BATCH_SIZE = 32
 EPOCHS = 100
 LEARNING_RATE = 0.0005
-HIDDEN_SIZE = 64
-NUM_LAYERS = 3
+HIDDEN_SIZE = 16
+NUM_LAYERS = 1
 NUM_CLASSES = 3 # 0: Hold, 1: Long, 2: Short
-DROPOUT = 0.3
+DROPOUT = 0.4
 
 # --- DATA PREPARATION ---
 # Note: each row contains the target of the action to perform at the opening at the next candle
@@ -73,6 +73,7 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
         'candle_body', 'candle_shadow_up', 'candle_shadow_low',
         'RSI_15', 'dist_SMA_20', 'dist_SMA_50', 'MACD_norm',
         'ATR_norm', 'BB_width_pct', 'OBV_pct', 'log_ret',
+        'vol_rel', 'ROC_10',
     ]
 
     print(f"  -> Features ({len(feature_cols)}): {feature_cols}")
@@ -162,17 +163,18 @@ def train_lstm_model(df: pd.DataFrame, lookahead_days=10, plot_results=True):
     # Loss and Optimizer
     # 1. Calculate weights based on the frequency in the train set
     class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y_train), y=y_train)
-    class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
-    print(f"\n  -> Calculated Class Weights: {class_weights}")
+    class_weights = torch.sqrt(torch.tensor(class_weights, dtype=torch.float)).to(device)  # Dampen with sqrt to avoid over-trading
+    print(f"\n  -> Calculated Class Weights (sqrt-dampened): {class_weights}")
 
     criterion = nn.CrossEntropyLoss(weight=class_weights) # Cross Entropy Loss for multi-class classification
-    optimizer = optim.Adam(model.parameters(), lr = LEARNING_RATE, weight_decay=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr = LEARNING_RATE, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    train(model, train_loader, val_loader, criterion, optimizer, plot_results=plot_results)
+    train(model, train_loader, val_loader, criterion, optimizer, scheduler=scheduler, plot_results=plot_results)
     return model, scaler, feature_cols
 
 
-def train(model, train_loader, val_loader, criterion, optimizer, plot_results=True):
+def train(model, train_loader, val_loader, criterion, optimizer, scheduler=None, plot_results=True):
     print("\n  -> Starting Training")
 
     best_loss = float('inf')
@@ -198,6 +200,8 @@ def train(model, train_loader, val_loader, criterion, optimizer, plot_results=Tr
             loss = criterion(outputs, labels) # 3. Calculate the error
             
             loss.backward() # 4. Backward pass (Calculate gradients)
+            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # Prevent exploding gradients
             
             optimizer.step() # 5. Optimization (Update weights)
             
@@ -228,9 +232,9 @@ def train(model, train_loader, val_loader, criterion, optimizer, plot_results=Tr
 
         print(f"  -> Epoch: {epoch+1:03d}/{EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.4f}", end="")
 
-        # --- EARLY STOPPING LOGIC ---
-        # if avg_val_loss < best_loss:
-        if best_val_acc == 0 or val_acc > best_val_acc:
+        # -- EARLY STOPPING LOGIC ---
+        if avg_val_loss < best_loss:
+        # if best_val_acc == 0 or val_acc > best_val_acc:
             best_loss = avg_val_loss
             best_val_acc = val_acc
             best_model_wts = copy.deepcopy(model.state_dict())
@@ -242,6 +246,9 @@ def train(model, train_loader, val_loader, criterion, optimizer, plot_results=Tr
             if trigger_times >= patience:
                 print(f"\n  -> Early stopping! Best Validation Loss was: {best_loss:.4f}. Best Accuracy was: {best_val_acc:.4f}")
                 break
+        
+        if scheduler:
+            scheduler.step(avg_val_loss)
 
     # Load best model weights
     model.load_state_dict(best_model_wts)

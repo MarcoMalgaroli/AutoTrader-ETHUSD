@@ -2,7 +2,7 @@ import numpy as np
 from backtest import backtest
 from machine_learning.random_forest import train_random_forest_model as rf_model
 import machine_learning.lstm as lstm
-from models.MT5Services import MT5Services
+# from models.MT5Services import MT5Services
 from dataset_utils import dataset_utils, feature_engineering
 from pathlib import Path
 import pandas as pd
@@ -29,10 +29,10 @@ def main():
         print(f"\x1b[91;1mTerminating due to error: {e}\x1b[0m")
         return
     
-    path_list = [Path('datasets/raw/ETHUSD_D1_3078.csv'), Path('datasets/raw/ETHUSD_H1_48685.csv')]
-    path_list = [Path('datasets/raw/ETHUSD_D1_3078.csv')]
-    path_list_final = [Path('datasets/final/ETHUSD_D1_3078.csv'), Path('datasets/final/ETHUSD_H1_48685.csv')]
-    path_list_final = [Path('datasets/final/ETHUSD_D1_3078.csv')]
+    path_list = [Path('datasets/raw/ETHUSD_D1_3082.csv'), Path('datasets/raw/ETHUSD_H1_48685.csv')]
+    path_list = [Path('datasets/raw/ETHUSD_D1_3082.csv')]
+    path_list_final = [Path('datasets/final/ETHUSD_D1_3082.csv'), Path('datasets/final/ETHUSD_H1_48685.csv')]
+    path_list_final = [Path('datasets/final/ETHUSD_D1_3082.csv')]
     
     # generate datasets for D1 and H1 timeframes
     # path_list = dataset_utils.generate_dataset(mt5, timeframes = ["D1", "H1"]) # Download datasets
@@ -55,11 +55,17 @@ def main():
     for path in path_list_final:
         print("\n" + " LIVE PREDICTION ".center(PRINT_WIDTH, "="))
         df = pd.read_csv(path)
-        print(df.tail(5))
-        model, scaler, feature_cols = lstm.train_lstm_model(df, lookahead_days=lookahead) # Train LSTM model on each dataset
+
+        preds = []
+        # for i in range(-40, -20):
+            # print(f"Candle {i}:")
+            # data = df.iloc[:i]
+        data = df.copy()
+        print(data.tail(5))
+        model, scaler, feature_cols = lstm.train_lstm_model(data, lookahead_days=lookahead) # Train LSTM model on each dataset
 
         # PREDICT NEXT CANDLE
-        probs = lstm.predict_next_move(model, df, feature_cols, scaler)
+        probs = lstm.predict_next_move(model, data, feature_cols, scaler)
 
         print(f"Probabilities for next candle (closing 'now' candle):")
         print(f"HOLD:  {probs[0]:.4f}")
@@ -70,30 +76,36 @@ def main():
         actions = ["HOLD", "LONG", "SHORT"]
         
         print(f"\n>>> CONSIGLIO AI: {actions[best_action]} (Confidenza: {probs[best_action]:.2%})")
-        print(f"  > REAL: {df.iloc[-1]['target']}, CLOSE: {df.iloc[-1]['close']}")
+        print(f"  > REAL (may be unreliable): {actions[data.iloc[-1]['target']]}, CLOSE: {data.iloc[-1]['close']}")
+        preds.append((data.iloc[-1]['time'], actions[best_action], probs[best_action], actions[data.iloc[-1]['target']]))
+        
+        print("\n" + " LIVE PREDICTION SUMMARY ".center(PRINT_WIDTH, "="))
+        for time, action, conf, real in preds:
+            print(f"{time}: AI={action} (Conf: {conf:.2%}), REAL={real}")
     
-    
-    backtest_window = 30 * 6 # Backtest on last 6 months of daily data (180 candles)
+    backtest_window = 365 # Backtest on last ~1 year of daily data
     predict_window = 30
     initial_capital = 100000
     df = pd.read_csv(path_list_final[0])
-    res = backtest.backtest_triple_barrier(df, backtest_window, predict_window, initial_capital, lookahead, atr_mult, position_size=0.1)
+    res = backtest.backtest_triple_barrier(df, backtest_window, predict_window, initial_capital, lookahead, atr_mult, threshold=0.40, position_size=0.1)
     
     print("\n" + " BACKTEST RESULTS ".center(PRINT_WIDTH, "="))
     print(res.summary)
 
     plt.figure(figsize=(12, 6))
-    plt.plot(res.equity_curve, label='ML Strategy (Long/Short)', color='green')
+    plt.plot(res.equity_curve.index, res.equity_curve.values, label='ML Strategy (Long/Short)', color='green')
     plt.axhline(y=initial_capital, color='r', linestyle='--', alpha=0.3, label='Break Even')
     
     # bh_equity = initial_capital * (1 + (df['close'].values[-(backtest_window + predict_window):] - df['close'].values[-(backtest_window + predict_window)]) / df['close'].values[-(backtest_window + predict_window)])
     # plt.plot(bh_equity, label='Buy & Hold ETH', color='gray', alpha=0.5, linestyle='--')
 
     plt.title('Equity Curve: ML Model vs Buy & Hold')
-    plt.xlabel('Trading Days')
+    plt.xlabel('Date')
     plt.ylabel('Capital ($)')
     plt.legend()
     plt.grid(True, alpha=0.3)
+    plt.gcf().autofmt_xdate()
+    plt.tight_layout()
     plt.show()
     
     # mt5.shutdown()

@@ -369,4 +369,48 @@ class MT5Services:
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             raise Exception(f"Order placement failed: {result.comment} (retcode: {result.retcode})")
         return result
+
+    def close_position(self, ticket: int, symbol: Optional[str] = None, deviation: int = 10, comment: str = "close by AI") -> None:
+        """
+        Chiude una posizione aperta dato il ticket.
+        """
+        positions = mt5.positions_get(ticket=ticket)
+        if positions is None or len(positions) == 0:
+            raise Exception(f"Posizione {ticket} non trovata")
+
+        pos = positions[0]
+        symbol = symbol or pos.symbol
+        close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+        price_info = self.get_last_tick(symbol)
+        price = price_info['bid'] if close_type == mt5.ORDER_TYPE_SELL else price_info['ask']
+
+        symbol_info = self.get_symbol_info(symbol)
+        match symbol_info['filling_mode']:
+            case 1:
+                filling_mode = mt5.ORDER_FILLING_FOK
+            case 2:
+                filling_mode = mt5.ORDER_FILLING_IOC
+            case 4:
+                filling_mode = mt5.ORDER_FILLING_BOC
+            case _:
+                filling_mode = mt5.ORDER_FILLING_RETURN
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": pos.volume,
+            "type": close_type,
+            "position": ticket,
+            "price": price,
+            "deviation": deviation,
+            "magic": 112233,
+            "comment": comment,
+            "type_filling": filling_mode,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise Exception(f"Close position failed: {result.comment} (retcode: {result.retcode})")
+        return result
     

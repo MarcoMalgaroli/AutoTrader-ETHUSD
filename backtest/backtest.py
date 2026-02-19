@@ -87,7 +87,7 @@ def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_wind
         # Train internally manage Train/Val split using tail of current_train_df
         model, scaler, feature_cols = lstm.train_lstm_model(
             current_train_df, 
-            lookahead_days=0 if candle < n - lookahead else lookahead,
+            lookahead_days=lookahead,
             plot_results=False
         )
         
@@ -116,6 +116,28 @@ def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_wind
             if cls == 1: final_preds[i] = 1
             elif cls == 2: final_preds[i] = -1
             else: final_preds[i] = 0
+
+    # --- WALK-FORWARD DIAGNOSTIC ---
+    pred_indices = np.where(prediction_mask)[0]
+    if len(pred_indices) > 0:
+        n_long = (final_preds[pred_indices] == 1).sum()
+        n_short = (final_preds[pred_indices] == -1).sum()
+        n_hold = (final_preds[pred_indices] == 0).sum()
+        print(f"\n  -> Prediction Distribution: LONG={n_long}, SHORT={n_short}, HOLD={n_hold}")
+        
+        # Compare predictions vs actual targets
+        trade_indices = pred_indices[final_preds[pred_indices] != 0]
+        if len(trade_indices) > 0:
+            actual_targets = df['target'].values[trade_indices]
+            correct = (final_preds[trade_indices] == actual_targets).sum()
+            print(f"  -> Signal Accuracy (pred vs label): {correct}/{len(trade_indices)} = {correct/len(trade_indices):.2%}")
+            
+            # Per-class accuracy
+            for signal, name in [(1, 'LONG'), (-1, 'SHORT')]:
+                mask = final_preds[trade_indices] == signal
+                if mask.sum() > 0:
+                    cls_correct = (actual_targets[mask] == signal).sum()
+                    print(f"     {name}: {cls_correct}/{mask.sum()} correct = {cls_correct/mask.sum():.2%}")
 
     backtest_slice = slice(start_point, n)
     
@@ -261,6 +283,12 @@ def backtest_calc_equity(df: pd.DataFrame, pred_arr: np.ndarray, initial_capital
 		trade_returns.append(net_return)
 		equity.append(current_capital)
 
+	# Build date index for equity curve
+	# equity has n entries (one per candle from i=0..n-2, plus initial capital at position 0)
+	dates = pd.to_datetime(df['time'].values)
+	# equity[0] = initial capital (before first candle), equity[1..n-1] = after candle 0..n-2
+	equity_dates = dates[:len(equity)]
+
 	trade_returns = pd.Series(trade_returns, name="trade_returns")
 
 	n_trades = int((pred_arr != 0).sum())
@@ -287,7 +315,7 @@ def backtest_calc_equity(df: pd.DataFrame, pred_arr: np.ndarray, initial_capital
 	}
 
 	return BacktestResult(
-		equity_curve=pd.Series(equity),
+		equity_curve=pd.Series(equity, index=equity_dates),
 		trade_returns=trade_returns,
 		summary=summary,
 	)
