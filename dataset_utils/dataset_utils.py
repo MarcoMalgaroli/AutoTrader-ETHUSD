@@ -1,11 +1,15 @@
+import json
 from pathlib import Path
 from typing import List, Optional
 import pandas as pd
 import mplfinance as mpf
 from models.MT5Services import MT5Services
 
-PRINT_WIDTH = 100
-BASE_PATH_RAW = Path("datasets", "raw")
+with open(Path(__file__).resolve().parent.parent / "config.json", "r") as f:
+    CONFIG = json.load(f)
+
+PRINT_WIDTH = CONFIG["print_width"]
+BASE_PATH_RAW = Path(CONFIG["paths"]["dataset_raw"])
 
 TIMEFRAMES = {
     "M1": "1min",
@@ -31,7 +35,7 @@ TIMEFRAMES = {
     "MN1": "1MS",
 }
 
-def generate_dataset(mt5: MT5Services, symbol: Optional[str] = None, timeframes: List[str] = ["D1", "H1", "M15", "M5"]) -> List[Path]:
+def generate_dataset(mt5: MT5Services, symbol: Optional[str] = None, timeframes: List[str] = ["D1", "H12", "H4", "H1"]) -> List[Path]:
     symbol = symbol or mt5.get_selected_symbol()
     print("\n" + f" CREATING DATASET FOR {symbol} ".center(PRINT_WIDTH, "="))
     
@@ -45,7 +49,7 @@ def generate_dataset(mt5: MT5Services, symbol: Optional[str] = None, timeframes:
             if df is None:
                 raise ValueError(f"No data returned for {symbol} [{tf}]")
 
-            file_path = BASE_PATH_RAW / f"{symbol}_{tf}_{len(df)}.csv"
+            file_path = BASE_PATH_RAW / f"{symbol}_{tf}.csv"
             df.to_csv(file_path, index = False)
 
             print(f"\x1b[92m  -> Dataset for {symbol} [{tf}] saved at {file_path}\x1b[0m")
@@ -66,15 +70,11 @@ def validate_dataset(path_list: Optional[List[Path]] = None) -> bool:
         ok = True
         try:
             df = pd.read_csv(path, parse_dates = ['time'])
-            symbol, timeframe, length = path.stem.split("_")
-            length = int(length)
+            symbol, timeframe = path.stem.split("_", maxsplit=1)
+            timeframe = timeframe.split("_")[0]  # strip trailing suffixes like _3082
 
             print(f"  -> Start date: {df['time'].iloc[0]}")
             print(f"  -> End date:   {df['time'].iloc[-1]}")
-
-            if len(df) != length:
-                print(f"\x1b[91;1m X-> Length mismatch: {len(df)} != {length}\x1b[0m")
-                ok = False
             
             required_cols = {"time", "open", "high", "low", "close", "tick_volume", "spread"}
             missing = required_cols - set(df.columns)

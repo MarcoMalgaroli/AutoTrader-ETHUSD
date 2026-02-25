@@ -1,0 +1,137 @@
+:root {
+    --clr-bg:     #0d1117;
+    --clr-card:   #161b22;
+    --clr-border: #30363d;
+    --clr-green:  #26a69a;
+    --clr-red:    #ef5350;
+    --clr-muted:  #8b949e;
+    --clr-yellow: #f0b90b;
+}
+
+body {
+    background: var(--clr-bg);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+.card {
+    background: var(--clr-card);
+    border: 1px solid var(--clr-border);
+}
+
+.stat-value {
+    font-size: 1.55rem;
+    font-weight: 700;
+}
+
+.stat-label {
+    font-size: .75rem;
+    text-transform: uppercase;
+    color: var(--clr-muted);
+    letter-spacing: .06em;
+}
+
+.badge-long  {
+    background: var(--clr-green);
+}
+
+.badge-short {
+    background: var(--clr-red);
+}
+
+.badge-hold  {
+    background: #6c757d;
+}
+
+.badge-open  {
+    background: var(--clr-yellow);
+    color: #000;
+}
+
+.badge-closed {
+    background: #6c757d;
+}
+
+.badge-pending {
+    background: #0d6efd;
+}
+
+.badge-cancelled {
+    background: #6c757d;
+    opacity: .6;
+}
+
+.table-trades {
+    font-size: .82rem;
+}
+
+.table-trades td, .table-trades th {
+    vertical-align: middle;
+}
+
+#prediction-box {
+    border-left: 4px solid var(--clr-muted);
+    transition: border-color .3s;
+}
+
+#prediction-box.long  {
+    border-color: var(--clr-green);
+}
+
+#prediction-box.short {
+    border-color: var(--clr-red);
+}
+
+.spinner-grow-sm {
+    width: .65rem;
+    height: .65rem;
+}
+
+.chart-container {
+    position: relative;
+    width: 100%;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.status-dot.online {
+    background: var(--clr-green);
+    animation: pulse 2s infinite;
+}
+
+.status-dot.offline {
+    background: var(--clr-red);
+}
+
+.status-dot.warning {
+    background: var(--clr-yellow);
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: .4;
+    }
+}
+
+.nav-tabs .nav-link {
+    color: var(--clr-muted);
+    border: 1px solid transparent;
+}
+
+.nav-tabs .nav-link.active {
+    color: #fff;
+    background: var(--clr-card);
+    border-color: var(--clr-border) var(--clr-border) var(--clr-card);
+}
+
+.btn-action {
+    font-size: .78rem;
+    padding: .25rem .6rem;
+}

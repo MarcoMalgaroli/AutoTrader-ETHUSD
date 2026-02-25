@@ -1,13 +1,14 @@
 """
-Live Trader — Scheduler + Pipeline per il trading automatico ETHUSD.
+Live Trader — Scheduler + Pipeline for automatic trading ETHUSD.
 
-Workflow giornaliero:
-  23:55  ➜  Download dati da MT5, feature engineering, LSTM prediction
-  00:05  ➜  Se il segnale non è HOLD, invia ordine a MT5 con TP/SL (triple barrier)
+Daily workflow:
+  23:55  ➜  Download data from MT5, feature engineering, LSTM prediction
+  00:05  ➜  If segnal is not HOLD, send order to MT5 with TP/SL (triple barrier)
 
-Tutto viene loggato in data/live_trades.json tramite trade_logger.
+Everything is loggato in data/live_trades.db (SQLite) with trade_logger.
 """
 
+import json
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -15,39 +16,41 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 
-# Aggiungi root al path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import machine_learning.lstm as lstm
-from dataset_utils import feature_engineering
+with open(PROJECT_ROOT / "config.json", "r") as f:
+    CONFIG = json.load(f)
+
+import machine_learning.lstm_classifier as lstm
+from dataset_utils import dataset_utils, feature_engineering
 from live_trading import trade_logger
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-SYMBOL = "ETHUSD"
-TIMEFRAME = "D1"
-LOOKAHEAD = 10
-ATR_MULT = 2.0
-THRESHOLD = 0.40            # confidenza minima per aprire un trade
-VOLUME = 0.01               # lotti da tradare
-POSITION_SIZE = 0.1         # 10% del capitale per trade (usato per il log)
-INITIAL_CAPITAL = 100_000
+SYMBOL = CONFIG["symbol"]
+TIMEFRAME = CONFIG["live_trading"]["timeframe"]
+LOOKAHEAD = CONFIG["trading"]["lookahead"]
+ATR_MULT = CONFIG["trading"]["atr_mult"]
+THRESHOLD = CONFIG["trading"]["threshold"]
+VOLUME = CONFIG["live_trading"]["volume"]
+POSITION_SIZE = CONFIG["live_trading"]["position_size"]
+INITIAL_CAPITAL = CONFIG["trading"]["initial_capital"]
 
 # Paths
-DATASET_RAW = PROJECT_ROOT / "datasets" / "raw" / "ETHUSD_D1_3082.csv"
-DATASET_FINAL = PROJECT_ROOT / "datasets" / "final" / "ETHUSD_D1_3082.csv"
+DATASET_RAW = PROJECT_ROOT / CONFIG["paths"]["dataset_raw"] / f"{SYMBOL}_{TIMEFRAME}.csv"
+DATASET_FINAL = PROJECT_ROOT / CONFIG["paths"]["dataset_final"] / f"{SYMBOL}_{TIMEFRAME}.csv"
 
 # Stato globale condiviso (accessibile dalla dashboard)
 state = {
     "last_prediction": None,       # {action, probs, confidence, time}
     "last_signal_time": None,
-    "pending_trade_id": None,      # id del trade in attesa di esecuzione
+    "pending_trade_id": None,      # id of pending trade to be executed
     "mt5_connected": False,
     "scheduler_running": False,
-    "next_prediction": None,       # prossimo run prediction
-    "next_execution": None,        # prossimo run execution
+    "next_prediction": None,       # next run prediction
+    "next_execution": None,        # next run execution
     "last_error": None,
-    "model": None,                 # modello LSTM caricato
+    "model": None,                 # LSTM model loaded
     "scaler": None,
     "feature_cols": None,
 }
@@ -55,15 +58,22 @@ state = {
 
 def log(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[LiveTrader {ts}] {msg}")
+    print(f"[\x1b[45mLiveTrader\x1b[0m {ts}] {msg}")
 
+def recover_pending():
+    """Recover any pending trade from a previous session."""
+    pending = trade_logger.get_pending_trades()
+    if pending:
+        latest = pending[-1]
+        state["pending_trade_id"] = latest["id"]
+        log(f"Recovered pending trade from previous session: {latest['id']}")
 
 # ─── JOB 1: PREDICTION (23:55) ──────────────────────────────────────────────
 
 def job_predict(mt5_service=None):
     """
-    Eseguito ogni giorno alle 23:55.
-    1. Scarica dati aggiornati da MT5 (o usa CSV se MT5 non disponibile)
+    Executed each day at 23:55.
+    1. Download updated data from MT5 (or usa CSV se MT5 non disponibile)
     2. Feature engineering
     3. LSTM prediction
     4. Se segnale LONG/SHORT sopra soglia → crea trade pending
@@ -71,25 +81,24 @@ def job_predict(mt5_service=None):
     log("═══ JOB PREDICTION START ═══")
 
     try:
-        # ── 1. Acquisizione dati ──
+        # ── 1. Data download ──
         df_raw = None
         if mt5_service is not None:
             try:
-                log("Scaricamento dati live da MT5...")
-                df_raw = mt5_service.get_historical_data_pos(
-                    symbol=SYMBOL, timeframe=TIMEFRAME, pos=0, count=3500
-                )
-                # Salva come CSV aggiornato
-                df_raw.to_csv(DATASET_RAW, index=False)
-                log(f"Dati MT5 scaricati: {len(df_raw)} candele")
+                log("Download live data from MT5...")
+                raw_path = dataset_utils.generate_dataset(mt5_service, symbol=SYMBOL, timeframes=[TIMEFRAME])
+                if not dataset_utils.validate_dataset(raw_path):
+                    raise ValueError("Dataset validation failed")
+                log("Data downloaded successfully")
                 state["mt5_connected"] = True
+                df_raw = pd.read_csv(raw_path[0])
             except Exception as e:
-                log(f"⚠ MT5 download fallito: {e}. Uso CSV locale.")
+                log(f"\x1b[91mMT5 download failed: {e}. Using local CSV.\x1b[0m")
                 state["mt5_connected"] = False
                 df_raw = None
 
         if df_raw is None:
-            log(f"Uso dataset locale: {DATASET_RAW}")
+            log(f"Use local dataset: {DATASET_RAW}")
             df_raw = pd.read_csv(DATASET_RAW)
 
         # ── 2. Feature engineering ──
@@ -102,12 +111,12 @@ def job_predict(mt5_service=None):
 
         # ── 3. Train model + prediction ──
         log("Training LSTM model...")
-        model, scaler, feature_cols = lstm.train_lstm_model(
+        model, scaler, feature_cols = lstm.train_lstm_classifier(
             df, lookahead_days=LOOKAHEAD, plot_results=False
         )
         probs = lstm.predict_next_move(model, df, feature_cols, scaler)
 
-        # Salva modello nello stato
+        # save model in state
         state["model"] = model
         state["scaler"] = scaler
         state["feature_cols"] = feature_cols
@@ -134,7 +143,7 @@ def job_predict(mt5_service=None):
         log(f"Prediction: {action} (conf={confidence:.2%})")
         log(f"  HOLD={probs[0]:.4f}  LONG={probs[1]:.4f}  SHORT={probs[2]:.4f}")
 
-        # ── 4. Crea trade pending se sopra soglia ──
+        # ── 4. Create pending trade if above threshold ──
         if action in ("LONG", "SHORT") and confidence >= THRESHOLD:
             trade = trade_logger.create_trade(
                 direction=action,
@@ -147,16 +156,16 @@ def job_predict(mt5_service=None):
                 confidence=confidence,
             )
             state["pending_trade_id"] = trade["id"]
-            log(f"✅ Trade PENDING creato: {trade['id']} → {action}")
+            log(f"PENDING Trade created: {trade['id']} → {action}")
         else:
             state["pending_trade_id"] = None
-            log(f"⏸ Nessun trade: segnale={action}, conf={confidence:.2%} (soglia={THRESHOLD:.0%})")
+            log(f"No trade: signal={action}, conf={confidence:.2%} (threshold={THRESHOLD:.0%})")
 
         log("═══ JOB PREDICTION END ═══\n")
 
     except Exception as e:
         state["last_error"] = str(e)
-        log(f"❌ ERRORE in job_predict: {e}")
+        log(f"\x1b[91mERROR in job_predict: {e}\x1b[0m")
         import traceback
         traceback.print_exc()
 
@@ -165,22 +174,22 @@ def job_predict(mt5_service=None):
 
 def job_execute(mt5_service=None):
     """
-    Eseguito ogni giorno alle 00:05.
-    Prende il trade pending e lo esegue su MT5.
-    Se MT5 non è disponibile, segna il trade come cancelled.
+    Executed each day at 00:05.
+    Take pending order and execute on MT5.
+    If MT5 is unavailable, the trade is marked as cancelled
     """
     log("═══ JOB EXECUTION START ═══")
 
     trade_id = state.get("pending_trade_id")
     if not trade_id:
-        log("Nessun trade pending da eseguire.")
+        log("No pending trade to execute.")
         log("═══ JOB EXECUTION END ═══\n")
         return
 
     pending = trade_logger.get_pending_trades()
     trade = next((t for t in pending if t["id"] == trade_id), None)
     if not trade:
-        log(f"Trade {trade_id} non trovato tra i pending.")
+        log(f"Trade {trade_id} not found among pending trades.")
         state["pending_trade_id"] = None
         log("═══ JOB EXECUTION END ═══\n")
         return
@@ -190,7 +199,7 @@ def job_execute(mt5_service=None):
     last_close = pred.get("last_close", 0)
     atr = pred.get("atr", 0)
 
-    # Calcola TP/SL con triple barrier
+    # Calculate TP/SL con triple barrier
     if direction == "LONG":
         tp = last_close + ATR_MULT * atr
         sl = last_close - ATR_MULT * atr
@@ -198,13 +207,13 @@ def job_execute(mt5_service=None):
         tp = last_close - ATR_MULT * atr
         sl = last_close + ATR_MULT * atr
 
-    log(f"Esecuzione trade {trade_id}: {direction} @ ~{last_close:.2f}")
+    log(f"Trade execution {trade_id}: {direction} @ ~{last_close:.2f}")
     log(f"  TP={tp:.2f}  SL={sl:.2f}  ATR={atr:.2f}")
 
-    # ── Invio a MT5 ──
+    # ── Send to MT5 ──
     if mt5_service is not None:
         try:
-            # Calcola sl_mult e tp_mult in punti
+            # Calculate sl_mult e tp_mult in points
             symbol_info = mt5_service.get_symbol_info(SYMBOL)
             point = symbol_info["point"]
             tp_points = abs(tp - last_close) / point
@@ -230,17 +239,17 @@ def job_execute(mt5_service=None):
                 mt5_ticket=ticket,
             )
             state["pending_trade_id"] = None
-            log(f"✅ Ordine eseguito! Ticket={ticket}, Entry={entry:.2f}")
+            log(f"Order executed! Ticket={ticket}, Entry={entry:.2f}")
 
         except Exception as e:
             trade_logger.mark_cancelled(trade_id, comment=f"MT5 error: {e}")
             state["pending_trade_id"] = None
             state["last_error"] = str(e)
-            log(f"❌ Errore MT5: {e}")
+            log(f"\x1b[91mMT5 error: {e}\x1b[0m")
 
     else:
-        # Simulazione senza MT5 (paper trading)
-        log("⚠ MT5 non connesso — Paper Trading mode")
+        # Simulation without MT5 (paper trading)
+        log("\x1b[93mMT5 not connected — Paper Trading mode\x1b[0m")
         trade_logger.mark_open(
             trade_id=trade_id,
             entry_price=last_close,
@@ -249,49 +258,49 @@ def job_execute(mt5_service=None):
             mt5_ticket=0,
         )
         state["pending_trade_id"] = None
-        log(f"📝 Trade simulato aperto: entry={last_close:.2f}")
+        log(f"Trade simulato aperto: entry={last_close:.2f}")
 
     log("═══ JOB EXECUTION END ═══\n")
 
 
-# ─── JOB 3: CHECK OPEN POSITIONS (ogni ora) ─────────────────────────────────
+# ─── JOB 3: CHECK OPEN POSITIONS (each hour) ─────────────────────────────────
 
 def job_check_positions(mt5_service=None):
     """
-    Controlla se i trade aperti sono stati chiusi (TP/SL raggiunto).
-    Aggiorna trade_logger di conseguenza.
+    Check if open trades have been closed (TP/SL raggiunto).
+    Update trade_logger accordingly.
     """
     open_trades = trade_logger.get_open_trades()
     if not open_trades:
         return
 
-    log(f"Controllo {len(open_trades)} trade aperti...")
+    log(f"Check {len(open_trades)} open trades...")
 
     for trade in open_trades:
         ticket = trade.get("mt5_ticket", 0)
 
-        # ── Verifica tramite MT5 ──
+        # ── Check with MT5 ──
         if mt5_service is not None and ticket:
             try:
                 positions = mt5_service.get_active_positions()
                 if positions is not None:
                     pos = positions[positions["ticket"] == ticket]
                     if pos.empty:
-                        # Posizione chiusa — recupera risultato dagli history deals
+                        # Closed position — get results from history deals
                         _close_from_history(mt5_service, trade)
                 else:
-                    # Nessuna posizione aperta, potrebbe essersi chiusa
+                    # No open positions, may be closed
                     _close_from_history(mt5_service, trade)
             except Exception as e:
-                log(f"  ⚠ Errore check ticket {ticket}: {e}")
+                log(f"\x1b[91mError checking ticket {ticket}: {e}\x1b[0m")
 
-        # ── Simulazione: controlla con dati dal CSV ──
+        # ── Simulation: check with data from CSV ──
         elif ticket == 0:
             _check_simulated_trade(trade)
 
 
 def _close_from_history(mt5_service, trade):
-    """Cerca nelle history deals il risultato del trade."""
+    """Search in history deals the trade result."""
     try:
         from datetime import timezone
         exec_time = datetime.fromisoformat(trade["exec_time"]) if trade["exec_time"] else datetime.now() - timedelta(days=30)
@@ -300,7 +309,7 @@ def _close_from_history(mt5_service, trade):
             to_date=datetime.now(timezone.utc),
         )
         if deals is not None and not deals.empty:
-            # Cerca il deal di chiusura
+            # Search closing deal
             entry = trade["entry_price"]
             direction = trade["direction"]
             deal = deals[deals["comment"].str.contains(trade["id"], na=False)]
@@ -311,15 +320,14 @@ def _close_from_history(mt5_service, trade):
                 else:
                     pnl = (entry - exit_price) / entry * POSITION_SIZE
                 trade_logger.mark_closed(trade["id"], exit_price, pnl)
-                log(f"  ✅ Trade {trade['id']} chiuso via MT5: exit={exit_price:.2f}, PnL={pnl:.4%}")
+                log(f"\x1b[92mTrade {trade['id']} closed with MT5: exit={exit_price:.2f}, PnL={pnl:.4%}\x1b[0m")
     except Exception as e:
-        log(f"  ⚠ Errore recupero history: {e}")
+        log(f"\x1b[91mError retrieving history: {e}\x1b[0m")
 
 
 def _check_simulated_trade(trade):
     """
-    Controllo simulato: guarda l'ultimo prezzo dal CSV per vedere se TP o SL è stato toccato.
-    In produzione con MT5, questo non serve.
+    Simulated check: use last price from CSV to see if TP or SL hit.
     """
     try:
         df = pd.read_csv(DATASET_RAW)
@@ -343,8 +351,8 @@ def _check_simulated_trade(trade):
             else:
                 pnl = (entry - exit_price) / entry * POSITION_SIZE
             trade_logger.mark_closed(trade["id"], exit_price, pnl)
-            result = "TP ✅" if hit_tp else "SL ❌"
-            log(f"  📝 Trade simulato {trade['id']} chiuso ({result}): PnL={pnl:.4%}")
+            result = "\x1b[92mTP\x1b[0m" if hit_tp else "\x1b[91mSL ❌\x1b[0m"
+            log(f"Simulated trade {trade['id']} close ({result}): PnL={pnl:.4%}")
 
     except Exception:
         pass
@@ -354,53 +362,54 @@ def _check_simulated_trade(trade):
 
 def setup_scheduler(mt5_service=None):
     """
-    Configura APScheduler con i job giornalieri.
-    Ritorna l'istanza scheduler (da fare .start() nella dashboard).
+    Configure APScheduler with daily jobs.
+    Return scheduler instance (call .start() from dashboard).
     """
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
 
     scheduler = BackgroundScheduler(timezone="UTC")
 
-    # Job 1: Prediction alle 23:55 UTC
+    recover_pending()
+
+    # Job 1: Prediction at configured time (UTC)
     scheduler.add_job(
         job_predict,
-        CronTrigger(hour=23, minute=55),
+        CronTrigger(hour=CONFIG["live_trading"]["prediction_hour"], minute=CONFIG["live_trading"]["prediction_minute"]),
         kwargs={"mt5_service": mt5_service},
         id="daily_prediction",
-        name="Daily Prediction (23:55 UTC)",
+        name=f"Daily Prediction ({CONFIG['live_trading']['prediction_hour']}:{CONFIG['live_trading']['prediction_minute']:02d} UTC)",
         replace_existing=True,
     )
 
-    # Job 2: Execution alle 00:05 UTC
+    # Job 2: Execution at configured time (UTC)
     scheduler.add_job(
         job_execute,
-        CronTrigger(hour=0, minute=5),
+        CronTrigger(hour=CONFIG["live_trading"]["execution_hour"], minute=CONFIG["live_trading"]["execution_minute"]),
         kwargs={"mt5_service": mt5_service},
         id="daily_execution",
-        name="Daily Execution (00:05 UTC)",
+        name=f"Daily Execution ({CONFIG['live_trading']['execution_hour']}:{CONFIG['live_trading']['execution_minute']:02d} UTC)",
         replace_existing=True,
     )
 
-    # Job 3: Check posizioni ogni ora
+    # Job 3: Check positions each hour
     scheduler.add_job(
         job_check_positions,
-        CronTrigger(minute=30),  # ogni ora al minuto 30
+        CronTrigger(minute=CONFIG["live_trading"]["check_positions_minute"]),
         kwargs={"mt5_service": mt5_service},
         id="check_positions",
-        name="Check Open Positions (ogni ora)",
+        name="Check Open Positions (each hour)",
         replace_existing=True,
     )
 
     state["scheduler_running"] = True
-    log("Scheduler configurato: prediction@23:55, execution@00:05, check@xx:30")
+    log("Scheduler setup: prediction@23:55, execution@00:05, check@xx:30")
 
     return scheduler
 
 
 def get_status() -> dict:
-    """Ritorna lo stato del trader per la dashboard."""
-    from apscheduler.schedulers.background import BackgroundScheduler
+    """Return trader status for the dashboard."""
 
     pred = state.get("last_prediction")
     pending = trade_logger.get_pending_trades()
@@ -423,9 +432,9 @@ def get_status() -> dict:
 # ─── MANUAL TRIGGER (per testing) ───────────────────────────────────────────
 
 def run_now(mt5_service=None):
-    """Esegue manualmente prediction + execution (per test / debug)."""
-    log("🔧 MANUAL RUN — Prediction")
+    """Execute manual prediction + execution (test / debug)."""
+    log("\x1b[36mMANUAL RUN — Prediction\x1b[0m")
     job_predict(mt5_service)
-    log("🔧 MANUAL RUN — Execution")
+    log("\x1b[36mMANUAL RUN — Execution\x1b[0m")
     job_execute(mt5_service)
-    log("🔧 MANUAL RUN completato")
+    log("\x1b[36mMANUAL RUN completed\x1b[0m")

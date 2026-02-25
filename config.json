@@ -1,0 +1,85 @@
+{
+    "symbol": "ETHUSD",
+    "print_width": 100,
+
+    "paths": {
+        "dataset_raw": "datasets/raw",
+        "dataset_final": "datasets/final"
+    },
+
+    "trading": {
+        "lookahead": 10,
+        "atr_mult": 1.5,
+        "threshold": 0.35,
+        "position_size": 0.01,
+        "initial_capital": 100000,
+        "commission": 0.001
+    },
+
+    "backtest": {
+        "backtest_window": 365,
+        "predict_window": 30
+    },
+
+    "lstm_classifier": {
+        "seq_len": 40,
+        "batch_size": 256,
+        "epochs": 100,
+        "learning_rate": 0.0005,
+        "hidden_size": 64,
+        "num_layers": 3,
+        "num_classes": 3,
+        "dropout": 0.3,
+        "seed": 42,
+        "early_stopping_patience": 10,
+        "val_pct": 0.05,
+        "feature_selection": {
+            "mode": "manual",
+            "corr_threshold": 0.70,
+            "feature_cols": [
+                "candle_body", "candle_shadow_up", "candle_shadow_low", "BB_pct",
+                "RSI_5", "dist_SMA_20", "dist_SMA_50", "MACD_norm",
+                "ATR_norm", "BB_width_pct", "OBV_pct", "log_ret",
+                "vol_rel", "ROC_10", "StochRSI_14_k"
+            ]
+        }
+    },
+
+    "mlp": {
+        "batch_size": 128,
+        "epochs": 150,
+        "learning_rate": 0.001,
+        "hidden_sizes": [128, 64, 128],
+        "num_classes": 3,
+        "dropout": 0.3,
+        "seed": 42,
+        "early_stopping_patience": 15,
+        "val_pct": 0.05,
+        "feature_selection": {
+            "mode": "manual",
+            "corr_threshold": 0.70,
+            "feature_cols": [
+                "candle_body", "candle_shadow_up", "candle_shadow_low", "BB_pct",
+                "RSI_5", "dist_SMA_20", "dist_SMA_50", "MACD_norm",
+                "ATR_norm", "BB_width_pct", "OBV_pct", "log_ret",
+                "vol_rel", "ROC_10", "StochRSI_14_k"
+            ]
+        }
+    },
+
+    "live_trading": {
+        "timeframe": "D1",
+        "volume": 0.01,
+        "position_size": 0.01,
+        "prediction_hour": 23,
+        "prediction_minute": 55,
+        "execution_hour": 0,
+        "execution_minute": 5,
+        "check_positions_minute": 30
+    },
+
+    "dashboard": {
+        "host": "127.0.0.1",
+        "port": 8050
+    }
+}

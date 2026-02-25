@@ -110,25 +110,6 @@ class MT5Services:
     def get_current_terminal_time(self) -> Optional[datetime]:
         return self.__safe_convert_to_datetime(self.get_last_tick()['time'])
     
-    def get_historical_data_range(self, symbol: Optional[str] = None, timeframe: str = "M5", from_date: Optional[datetime] = None, to_date: Optional[datetime] = None) -> Optional[pd.DataFrame]:
-        """
-        Return historical data of selected or specified symbol between dates (or in a day interval from now)
-        """
-        to_date = to_date or self.get_current_terminal_time()
-        from_date = from_date or (to_date - timedelta(days = 1))
-        symbol = symbol or self.symbol
-        if timeframe not in self.timeframes:
-            raise ValueError(f"Invalid timeframe ({timeframe})")
-
-        print(f"\n---> Start downloading {symbol} [{timeframe}] {from_date} - {to_date}")
-        rates = mt5.copy_rates_range(symbol, self.timeframes[timeframe], from_date, to_date)
-        if rates is None or len(rates) == 0:
-            raise Exception(f"No data found for {symbol}_{timeframe}: {from_date} - {to_date}")
-        rates_frame = pd.DataFrame(rates)       
-        rates_frame['time'] = pd.to_datetime(rates_frame['time'], unit = 's')
-        rates_frame = rates_frame[['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread']]
-        return rates_frame
-    
     def get_historical_data_pos(self, symbol: Optional[str] = None, timeframe: str = "M5", pos: int = 0, count: int = 1000) -> Optional[pd.DataFrame]:
         """
         Returns historical data of selected or specified symbol starting from pos, selecting count bars
@@ -294,12 +275,14 @@ class MT5Services:
 
     def __build_order_request(self, order_type: str, position: Optional[str] = None, symbol: Optional[str] = None, volume: Optional[float] = 0.01, price: Optional[float] = None, sl_mult: Optional[float] = 0.0, tp_mult: Optional[float] = 0.0, deviation: int = 10, comment: str = "python script") -> dict:
         symbol = symbol or self.symbol
-        price_info = self.get_last_tick(symbol)
-        symbol_info = self.get_symbol_info(symbol)
 
         if position is not None:
-            pos = self.get_active_positions()
-            pos = pos[pos['ticket'] == position].iloc[0]
+            pos = mt5.positions_get(ticket=position)
+            if pos is None or len(pos) == 0:
+                raise Exception(f"Position {position} not found")
+            pos = pos[0]
+            symbol = pos['symbol'] or symbol
+
             if pos['type'] == mt5.ORDER_TYPE_BUY:
                 order_type = "SELL"
             elif pos['type'] == mt5.ORDER_TYPE_SELL:
@@ -307,6 +290,9 @@ class MT5Services:
             else:
                 raise ValueError(f"Invalid position type: {pos['type']}")
                 
+        price_info = self.get_last_tick(symbol)
+        symbol_info = self.get_symbol_info(symbol)
+
         if order_type == "BUY":
             order_type = mt5.ORDER_TYPE_BUY
             price = price or price_info['ask']
@@ -341,11 +327,14 @@ class MT5Services:
             "deviation": deviation,
             "type": order_type,
             "type_filling": filling_mode,
-            "type_time": mt5.ORDER_TIME_SPECIFIED_DAY,
+            "type_time": mt5.ORDER_TIME_GTC,
             "comment": comment
         }
         if position is not None:
             request["position"] = position
+            request["volume"] = pos.volume
+            del request["sl"]
+            del request["tp"]
         return request
     
     def check_order(self, order_type: str, position: Optional[str] = None, symbol: Optional[str] = None, volume: Optional[float] = 0.01, price: Optional[float] = None, sl_mult: Optional[float] = 0.0, tp_mult: Optional[float] = 0.0, deviation: int = 10, comment: str = "python script") -> None:
@@ -372,42 +361,9 @@ class MT5Services:
 
     def close_position(self, ticket: int, symbol: Optional[str] = None, deviation: int = 10, comment: str = "close by AI") -> None:
         """
-        Chiude una posizione aperta dato il ticket.
+        Close an opened position given the ticket.
         """
-        positions = mt5.positions_get(ticket=ticket)
-        if positions is None or len(positions) == 0:
-            raise Exception(f"Posizione {ticket} non trovata")
-
-        pos = positions[0]
-        symbol = symbol or pos.symbol
-        close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-        price_info = self.get_last_tick(symbol)
-        price = price_info['bid'] if close_type == mt5.ORDER_TYPE_SELL else price_info['ask']
-
-        symbol_info = self.get_symbol_info(symbol)
-        match symbol_info['filling_mode']:
-            case 1:
-                filling_mode = mt5.ORDER_FILLING_FOK
-            case 2:
-                filling_mode = mt5.ORDER_FILLING_IOC
-            case 4:
-                filling_mode = mt5.ORDER_FILLING_BOC
-            case _:
-                filling_mode = mt5.ORDER_FILLING_RETURN
-
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": pos.volume,
-            "type": close_type,
-            "position": ticket,
-            "price": price,
-            "deviation": deviation,
-            "magic": 112233,
-            "comment": comment,
-            "type_filling": filling_mode,
-            "type_time": mt5.ORDER_TIME_GTC,
-        }
+        request = self.__build_order_request("CLOSE", position=ticket, symbol=symbol, deviation=deviation, comment=comment)
 
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:

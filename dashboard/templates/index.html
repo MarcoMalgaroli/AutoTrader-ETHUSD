@@ -6,46 +6,7 @@
     <title>{{ symbol }} — AI Trading Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <style>
-        :root {
-            --clr-bg:     #0d1117;
-            --clr-card:   #161b22;
-            --clr-border: #30363d;
-            --clr-green:  #26a69a;
-            --clr-red:    #ef5350;
-            --clr-muted:  #8b949e;
-            --clr-yellow: #f0b90b;
-        }
-        body { background: var(--clr-bg); font-family: 'Segoe UI', system-ui, sans-serif; }
-        .card { background: var(--clr-card); border: 1px solid var(--clr-border); }
-        .stat-value { font-size: 1.55rem; font-weight: 700; }
-        .stat-label { font-size: .75rem; text-transform: uppercase; color: var(--clr-muted); letter-spacing: .06em; }
-        .badge-long  { background: var(--clr-green); }
-        .badge-short { background: var(--clr-red); }
-        .badge-hold  { background: #6c757d; }
-        .badge-open  { background: var(--clr-yellow); color: #000; }
-        .badge-closed { background: #6c757d; }
-        .badge-pending { background: #0d6efd; }
-        .badge-cancelled { background: #6c757d; opacity: .6; }
-        .table-trades { font-size: .82rem; }
-        .table-trades td, .table-trades th { vertical-align: middle; }
-        #prediction-box { border-left: 4px solid var(--clr-muted); transition: border-color .3s; }
-        #prediction-box.long  { border-color: var(--clr-green); }
-        #prediction-box.short { border-color: var(--clr-red); }
-        .spinner-grow-sm { width: .65rem; height: .65rem; }
-        .chart-container { position: relative; width: 100%; }
-        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-        .status-dot.online { background: var(--clr-green); animation: pulse 2s infinite; }
-        .status-dot.offline { background: var(--clr-red); }
-        .status-dot.warning { background: var(--clr-yellow); }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: .4; }
-        }
-        .nav-tabs .nav-link { color: var(--clr-muted); border: 1px solid transparent; }
-        .nav-tabs .nav-link.active { color: #fff; background: var(--clr-card); border-color: var(--clr-border) var(--clr-border) var(--clr-card); }
-        .btn-action { font-size: .78rem; padding: .25rem .6rem; }
-    </style>
+    <link rel="stylesheet" href="/public/stylesheets/style.css">
 </head>
 <body>
 
@@ -69,23 +30,32 @@
 
 <div class="container-fluid px-3 py-3">
 
+    <!-- ─── PIPELINE ERROR BANNER ────────────────────────────────────── -->
+    <div class="alert alert-danger d-none d-flex align-items-center mb-3" role="alert" id="pipeline-error">
+        <i class="bi bi-exclamation-triangle-fill me-2 fs-5"></i>
+        <div>
+            <strong>Data pipeline error</strong>
+            <span id="pipeline-error-text" class="ms-1"></span>
+        </div>
+    </div>
+
     <!-- ─── TOP ROW: STATS CARDS ─────────────────────────────────────── -->
     <div class="row g-2 mb-3" id="stats-row">
         <div class="col-6 col-md-3 col-xl">
             <div class="card p-3 text-center h-100">
-                <div class="stat-label">Equity Finale</div>
+                <div class="stat-label">Final Equity</div>
                 <div class="stat-value" id="st-equity">—</div>
             </div>
         </div>
         <div class="col-6 col-md-3 col-xl">
             <div class="card p-3 text-center h-100">
-                <div class="stat-label">Rendimento Tot.</div>
+                <div class="stat-label">Total Return</div>
                 <div class="stat-value" id="st-return">—</div>
             </div>
         </div>
         <div class="col-6 col-md-3 col-xl">
             <div class="card p-3 text-center h-100">
-                <div class="stat-label">Trade</div>
+                <div class="stat-label">Trades</div>
                 <div class="stat-value" id="st-trades">—</div>
             </div>
         </div>
@@ -119,10 +89,10 @@
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <span><i class="bi bi-bar-chart-fill me-1"></i>{{ symbol }} — Daily</span>
                     <div>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="setRange(180)">6M</button>
-                        <button class="btn btn-sm btn-outline-secondary active" onclick="setRange(365)">1Y</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="setRange(730)">2Y</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="setRange(0)">Tutto</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="setRange(180, event)">6M</button>
+                        <button class="btn btn-sm btn-outline-secondary active" onclick="setRange(365, event)">1Y</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="setRange(730, event)">2Y</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="setRange(0, event)">All</button>
                     </div>
                 </div>
                 <div class="card-body p-0">
@@ -179,17 +149,17 @@
                 </div>
                 <div class="card-body">
                     <div class="row g-2 small">
-                        <div class="col-6"><span class="text-muted">Prossima Prediction:</span></div>
+                        <div class="col-6"><span class="text-muted">Next Prediction:</span></div>
                         <div class="col-6 text-end fw-bold" id="live-next-pred">—</div>
-                        <div class="col-6"><span class="text-muted">Prossima Execution:</span></div>
+                        <div class="col-6"><span class="text-muted">Next Execution:</span></div>
                         <div class="col-6 text-end fw-bold" id="live-next-exec">—</div>
-                        <div class="col-6"><span class="text-muted">Trade Aperti:</span></div>
+                        <div class="col-6"><span class="text-muted">Open Trades:</span></div>
                         <div class="col-6 text-end fw-bold" id="live-open-count">0</div>
-                        <div class="col-6"><span class="text-muted">Trade Pending:</span></div>
+                        <div class="col-6"><span class="text-muted">Pending Trades:</span></div>
                         <div class="col-6 text-end fw-bold" id="live-pending-count">0</div>
-                        <div class="col-6"><span class="text-muted">Trade Totali:</span></div>
+                        <div class="col-6"><span class="text-muted">Total Trades:</span></div>
                         <div class="col-6 text-end fw-bold" id="live-total-count">0</div>
-                        <div class="col-6"><span class="text-muted">Ultimo Segnale:</span></div>
+                        <div class="col-6"><span class="text-muted">Last Signal:</span></div>
                         <div class="col-6 text-end fw-bold" id="live-last-signal">—</div>
                     </div>
                     <div class="mt-2 text-danger small d-none" id="live-error-box">
@@ -200,17 +170,17 @@
 
             <!-- Live Prediction -->
             <div class="card mb-3" id="prediction-box">
-                <div class="card-header"><i class="bi bi-robot me-1"></i>Predizione AI — Prossima Candela</div>
+                <div class="card-header"><i class="bi bi-robot me-1"></i>AI Prediction — Next Candle</div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <div>
-                            <span class="stat-label">Segnale</span>
+                            <span class="stat-label">Signal</span>
                             <div class="stat-value" id="pred-action">
                                 <span class="spinner-grow spinner-grow-sm"></span>
                             </div>
                         </div>
                         <div class="text-end">
-                            <span class="stat-label">Confidenza</span>
+                            <span class="stat-label">Confidence</span>
                             <div class="stat-value" id="pred-conf">—</div>
                         </div>
                     </div>
@@ -238,17 +208,17 @@
                         </div>
                     </div>
                     <div class="mt-3 text-muted small">
-                        Ultimo prezzo: <strong id="pred-price">—</strong> &nbsp;·&nbsp; <span id="pred-time">—</span>
+                        Last price: <strong id="pred-price">—</strong> &nbsp;·&nbsp; <span id="pred-time">—</span>
                     </div>
                 </div>
             </div>
 
             <!-- Params -->
             <div class="card mb-3">
-                <div class="card-header"><i class="bi bi-gear me-1"></i>Parametri Backtest</div>
+                <div class="card-header"><i class="bi bi-gear me-1"></i>Backtest Parameters</div>
                 <div class="card-body small">
                     <div class="row g-1">
-                        <div class="col-6"><span class="text-muted">Finestra:</span></div><div class="col-6 text-end fw-bold" id="p-window">—</div>
+                        <div class="col-6"><span class="text-muted">Window:</span></div><div class="col-6 text-end fw-bold" id="p-window">—</div>
                         <div class="col-6"><span class="text-muted">Lookahead:</span></div><div class="col-6 text-end fw-bold" id="p-lookahead">—</div>
                         <div class="col-6"><span class="text-muted">ATR Mult:</span></div><div class="col-6 text-end fw-bold" id="p-atr">—</div>
                         <div class="col-6"><span class="text-muted">Threshold:</span></div><div class="col-6 text-end fw-bold" id="p-thresh">—</div>
@@ -285,11 +255,11 @@
                                         <th>Entry</th>
                                         <th>TP</th>
                                         <th>SL</th>
-                                        <th>Ritorno</th>
+                                        <th>Return</th>
                                     </tr>
                                 </thead>
                                 <tbody id="trades-body">
-                                    <tr><td colspan="6" class="text-center text-muted py-3">Caricamento…</td></tr>
+                                    <tr><td colspan="6" class="text-center text-muted py-3">Loading...</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -306,7 +276,7 @@
                                     </tr>
                                 </thead>
                                 <tbody id="live-trades-body">
-                                    <tr><td colspan="6" class="text-center text-muted py-3">Nessun trade live</td></tr>
+                                    <tr><td colspan="6" class="text-center text-muted py-3">No live trades</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -320,264 +290,6 @@
 <!-- ─── SCRIPTS ───────────────────────────────────────────────────────── -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-<script>
-const API = '';
-const DARK = { background: '#161b22', text: '#c9d1d9', grid: '#21262d' };
-
-/* ── helpers ─────────────────────────────────────────────────────── */
-function $(id) { return document.getElementById(id); }
-function fmt$(v) { return '$' + v.toLocaleString('en-US', {minimumFractionDigits: 0}); }
-function fmtPct(v, dec=2) { return (v >= 0 ? '+' : '') + v.toFixed(dec) + '%'; }
-function fmtTime(iso) {
-    if (!iso) return '—';
-    try { return new Date(iso).toLocaleString('it-IT', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
-    catch { return iso; }
-}
-
-/* ── Candlestick chart ───────────────────────────────────────────── */
-const candleChart = LightweightCharts.createChart($('chart-candles'), {
-    layout: { background: { color: DARK.background }, textColor: DARK.text },
-    grid: { vertLines: { color: DARK.grid }, horzLines: { color: DARK.grid } },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    rightPriceScale: { borderColor: DARK.grid },
-    timeScale: { borderColor: DARK.grid, timeVisible: false },
-});
-const candleSeries = candleChart.addCandlestickSeries({
-    upColor: '#26a69a', downColor: '#ef5350',
-    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
-    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
-});
-const smaLine = candleChart.addLineSeries({ color: '#2196F3', lineWidth: 1, title: 'SMA 50' });
-const emaLine = candleChart.addLineSeries({ color: '#FF9800', lineWidth: 1, title: 'EMA 20' });
-
-/* ── Equity chart (backtest) ─────────────────────────────────────── */
-const eqChart = LightweightCharts.createChart($('chart-equity'), {
-    layout: { background: { color: DARK.background }, textColor: DARK.text },
-    grid: { vertLines: { color: DARK.grid }, horzLines: { color: DARK.grid } },
-    rightPriceScale: { borderColor: DARK.grid },
-    timeScale: { borderColor: DARK.grid, timeVisible: false },
-});
-const eqSeries = eqChart.addAreaSeries({
-    topColor: 'rgba(38,166,154,0.4)', bottomColor: 'rgba(38,166,154,0.0)',
-    lineColor: '#26a69a', lineWidth: 2,
-});
-const eqBaseline = eqChart.addLineSeries({ color: '#ef5350', lineWidth: 1, lineStyle: 2, title: 'Break Even' });
-
-/* ── Equity chart (live) — lazy init ─────────────────────────────── */
-let eqLiveChart = null, eqLiveSeries = null, eqLiveBaseline = null;
-function initLiveEquityChart() {
-    if (eqLiveChart) return;
-    eqLiveChart = LightweightCharts.createChart($('chart-equity-live'), {
-        layout: { background: { color: DARK.background }, textColor: DARK.text },
-        grid: { vertLines: { color: DARK.grid }, horzLines: { color: DARK.grid } },
-        rightPriceScale: { borderColor: DARK.grid },
-        timeScale: { borderColor: DARK.grid, timeVisible: true },
-    });
-    eqLiveSeries = eqLiveChart.addAreaSeries({
-        topColor: 'rgba(240,185,11,0.4)', bottomColor: 'rgba(240,185,11,0.0)',
-        lineColor: '#f0b90b', lineWidth: 2,
-    });
-    eqLiveBaseline = eqLiveChart.addLineSeries({ color: '#ef5350', lineWidth: 1, lineStyle: 2, title: 'Break Even' });
-}
-
-let _allCandles = [];
-
-/* ── Fetch all data ──────────────────────────────────────────────── */
-async function loadAll() {
-    const [candles, indicators, equity, trades, stats, prediction, signals] = await Promise.all([
-        fetch(API + '/api/candles?last_n=3000').then(r => r.json()),
-        fetch(API + '/api/indicators?last_n=3000').then(r => r.json()),
-        fetch(API + '/api/equity').then(r => r.json()),
-        fetch(API + '/api/trades').then(r => r.json()),
-        fetch(API + '/api/stats').then(r => r.json()),
-        fetch(API + '/api/prediction').then(r => r.json()),
-        fetch(API + '/api/signals').then(r => r.json()),
-    ]);
-
-    _allCandles = candles;
-    candleSeries.setData(candles);
-    smaLine.setData(indicators.sma50);
-    emaLine.setData(indicators.ema20);
-    if (signals.length) candleSeries.setMarkers(signals.sort((a,b) => a.time - b.time));
-    setRange(365);
-
-    eqSeries.setData(equity);
-    if (equity.length > 1) {
-        const bv = equity[0].value;
-        eqBaseline.setData([{time:equity[0].time,value:bv},{time:equity[equity.length-1].time,value:bv}]);
-    }
-    eqChart.timeScale().fitContent();
-
-    $('st-equity').textContent = fmt$(stats.final_equity);
-    $('st-equity').style.color = stats.total_return_pct >= 0 ? '#26a69a' : '#ef5350';
-    $('st-return').textContent = fmtPct(stats.total_return_pct);
-    $('st-return').style.color = stats.total_return_pct >= 0 ? '#26a69a' : '#ef5350';
-    $('st-trades').textContent = `${stats.wins}W / ${stats.losses}L (${stats.trades})`;
-    $('st-hitrate').textContent = stats.hit_rate + '%';
-    $('st-hitrate').style.color = stats.hit_rate >= 50 ? '#26a69a' : '#ef5350';
-    $('st-dd').textContent = fmtPct(stats.max_drawdown);
-    $('st-dd').style.color = '#ef5350';
-    $('st-avgret').textContent = fmtPct(stats.avg_return, 3);
-    $('st-avgret').style.color = stats.avg_return >= 0 ? '#26a69a' : '#ef5350';
-    $('p-window').textContent = stats.backtest_window + ' giorni';
-    $('p-lookahead').textContent = stats.lookahead + ' candele';
-    $('p-atr').textContent = stats.atr_mult + 'x';
-    $('p-thresh').textContent = (stats.threshold * 100) + '%';
-
-    const box = $('prediction-box');
-    box.classList.remove('long','short');
-    if (prediction.action==='LONG') box.classList.add('long');
-    else if (prediction.action==='SHORT') box.classList.add('short');
-    const badge = prediction.action==='LONG'?'badge-long':prediction.action==='SHORT'?'badge-short':'badge-hold';
-    $('pred-action').innerHTML = `<span class="badge ${badge} fs-5">${prediction.action}</span>`;
-    $('pred-conf').textContent = (prediction.confidence*100).toFixed(1)+'%';
-    $('pred-hold').textContent = (prediction.hold*100).toFixed(1)+'%';
-    $('pred-long').textContent = (prediction.long*100).toFixed(1)+'%';
-    $('pred-short').textContent = (prediction.short*100).toFixed(1)+'%';
-    $('bar-hold').style.width = (prediction.hold*100)+'%';
-    $('bar-long').style.width = (prediction.long*100)+'%';
-    $('bar-short').style.width = (prediction.short*100)+'%';
-    $('pred-price').textContent = fmt$(prediction.last_close);
-    $('pred-time').textContent = prediction.last_time;
-
-    $('trade-count').textContent = trades.length;
-    const tbody = $('trades-body');
-    if (!trades.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">Nessun trade</td></tr>';
-    } else {
-        tbody.innerHTML = trades.slice().reverse().map(t => `
-            <tr>
-                <td class="text-nowrap">${t.time.split('T')[0]||t.time.split(' ')[0]}</td>
-                <td><span class="badge ${t.direction==='LONG'?'badge-long':'badge-short'}">${t.direction}</span></td>
-                <td>${t.entry}</td>
-                <td class="text-success">${t.tp}</td>
-                <td class="text-danger">${t.sl}</td>
-                <td class="${t.win?'text-success':'text-danger'} fw-bold">${fmtPct(t.return_pct,1)}</td>
-            </tr>
-        `).join('');
-    }
-
-    $('last-update').textContent = 'Aggiornato: ' + new Date().toLocaleString('it-IT');
-    loadLiveData();
-}
-
-/* ── Load live trading data ──────────────────────────────────────── */
-async function loadLiveData() {
-    try {
-        const [status, liveTrades, liveEquity] = await Promise.all([
-            fetch(API+'/api/live/status').then(r=>r.json()),
-            fetch(API+'/api/live/trades?last_n=20').then(r=>r.json()),
-            fetch(API+'/api/live/equity').then(r=>r.json()),
-        ]);
-
-        $('scheduler-dot').className = 'status-dot '+(status.scheduler_running?'online':'offline');
-        $('scheduler-label').textContent = status.scheduler_running?'Scheduler ON':'Scheduler OFF';
-        $('mt5-dot').className = 'status-dot '+(status.mt5_connected?'online':'warning');
-        $('mt5-label').textContent = status.mt5_connected?'MT5 ON':'Paper Mode';
-
-        $('live-next-pred').textContent = fmtTime(status.next_prediction);
-        $('live-next-exec').textContent = fmtTime(status.next_execution);
-        $('live-open-count').textContent = status.open_trades;
-        $('live-pending-count').textContent = status.pending_trades;
-        $('live-total-count').textContent = status.total_trades;
-
-        if (status.last_prediction) {
-            const lp = status.last_prediction;
-            const b2 = lp.action==='LONG'?'badge-long':lp.action==='SHORT'?'badge-short':'badge-hold';
-            $('live-last-signal').innerHTML = `<span class="badge ${b2}">${lp.action}</span> ${(lp.confidence*100).toFixed(0)}%`;
-        }
-
-        const errBox = $('live-error-box');
-        if (status.last_error) { errBox.classList.remove('d-none'); $('live-error-text').textContent = status.last_error; }
-        else { errBox.classList.add('d-none'); }
-
-        $('live-trade-count').textContent = liveTrades.length;
-        const lb = $('live-trades-body');
-        if (!liveTrades.length) {
-            lb.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">Nessun trade live ancora</td></tr>';
-        } else {
-            lb.innerHTML = liveTrades.map(t => {
-                const d = (t.exec_time||t.signal_time||'').split('T')[0];
-                const sb = t.status==='open'?'badge-open':t.status==='pending'?'badge-pending':t.status==='closed'?'badge-closed':'badge-cancelled';
-                const pnl = t.pnl_pct!==null?fmtPct(t.pnl_pct*100,2):'—';
-                const pc = t.pnl_pct>0?'text-success':t.pnl_pct<0?'text-danger':'';
-                return `<tr>
-                    <td class="text-nowrap">${d}</td>
-                    <td><span class="badge ${t.direction==='LONG'?'badge-long':'badge-short'}">${t.direction}</span></td>
-                    <td>${t.entry_price||'—'}</td>
-                    <td>${t.tp?t.tp+' / '+t.sl:'—'}</td>
-                    <td><span class="badge ${sb}">${t.status}</span></td>
-                    <td class="${pc} fw-bold">${pnl}</td>
-                </tr>`;
-            }).join('');
-        }
-
-        if (liveEquity.length > 1) {
-            initLiveEquityChart();
-            eqLiveSeries.setData(liveEquity);
-            const bv = liveEquity[0].value;
-            eqLiveBaseline.setData([{time:liveEquity[0].time,value:bv},{time:liveEquity[liveEquity.length-1].time,value:bv}]);
-            eqLiveChart.timeScale().fitContent();
-        }
-    } catch(e) { console.warn('Live data load error:', e); }
-}
-
-/* ── Action buttons ──────────────────────────────────────────────── */
-async function runPredictNow() {
-    if (!confirm('Eseguire la prediction adesso?')) return;
-    try {
-        const r = await fetch(API+'/api/live/predict-now',{method:'POST'});
-        const d = await r.json();
-        alert('Prediction completata: '+(d.prediction?.action||'vedi dashboard'));
-        loadLiveData();
-    } catch(e) { alert('Errore: '+e); }
-}
-async function runExecuteNow() {
-    if (!confirm('Eseguire il trade pending adesso?')) return;
-    try {
-        await fetch(API+'/api/live/execute-now',{method:'POST'});
-        alert('Execution completata');
-        loadLiveData();
-    } catch(e) { alert('Errore: '+e); }
-}
-async function runAllNow() {
-    if (!confirm('Eseguire Prediction + Execution adesso?\n(TRADE REALE se MT5 connesso, altrimenti Paper)')) return;
-    try {
-        await fetch(API+'/api/live/run-now',{method:'POST'});
-        alert('Prediction + Execution completati!');
-        loadLiveData();
-    } catch(e) { alert('Errore: '+e); }
-}
-
-/* ── Range selector ──────────────────────────────────────────────── */
-function setRange(days) {
-    if (days === 0) { candleChart.timeScale().fitContent(); }
-    else {
-        const total = _allCandles.length;
-        const from = total > days ? _allCandles[total-days].time : _allCandles[0].time;
-        const to = _allCandles[total-1].time;
-        candleChart.timeScale().setVisibleRange({ from, to });
-    }
-    document.querySelectorAll('.card-header .btn-outline-secondary').forEach(b => b.classList.remove('active'));
-    event && event.target && event.target.classList.add('active');
-}
-
-/* ── Resize ──────────────────────────────────────────────────────── */
-function handleResize() {
-    candleChart.resize($('chart-candles').clientWidth, 420);
-    eqChart.resize($('chart-equity').clientWidth, 220);
-    if (eqLiveChart) eqLiveChart.resize($('chart-equity-live').clientWidth, 220);
-}
-window.addEventListener('resize', handleResize);
-document.querySelector('[data-bs-target="#tab-eq-live"]').addEventListener('shown.bs.tab', () => {
-    initLiveEquityChart(); handleResize(); loadLiveData();
-});
-
-/* ── Auto-refresh live data every 60s ────────────────────────────── */
-setInterval(loadLiveData, 60000);
-
-/* ── Init ────────────────────────────────────────────────────────── */
-loadAll().then(handleResize);
-</script>
+<script src="/public/javascripts/script.js"></script>
 </body>
 </html>

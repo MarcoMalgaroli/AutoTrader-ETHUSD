@@ -1,3 +1,4 @@
+import json
 import pandas as pd
 import numpy as np
 from ta.trend import EMAIndicator, MACD
@@ -7,9 +8,78 @@ from ta.volume import OnBalanceVolumeIndicator, AccDistIndexIndicator, EaseOfMov
 from typing import List, Optional
 from pathlib import Path
 
-PRINT_WIDTH = 100
-BASE_PATH_RAW = Path("datasets", "raw")
-BASE_PATH_FINAL = Path("datasets", "final")
+with open(Path(__file__).resolve().parent.parent / "config.json", "r") as f:
+    CONFIG = json.load(f)
+
+PRINT_WIDTH = CONFIG["print_width"]
+BASE_PATH_RAW = Path(CONFIG["paths"]["dataset_raw"])
+BASE_PATH_FINAL = Path(CONFIG["paths"]["dataset_final"])
+
+# Non-stationary columns that must never be used as ML features.
+# These grow/shrink with the asset's price level and would cause
+# distribution shift between training and inference.
+NON_STATIONARY_COLS = {
+    'time', 'target',
+    'open', 'high', 'low', 'close', 'spread',
+    'SMA_5', 'SMA_10', 'SMA_20', 'SMA_50',
+    'EMA_5', 'EMA_10', 'EMA_20', 'EMA_50',
+    'ATR_14', 'MACD', 'vol_SMA_20', 'tick_volume',
+    'ADI_diff',
+}
+
+def select_features(df: pd.DataFrame, corr_threshold: float = 0.85) -> List[str]:
+    """
+    Automatically select all stationary/normalized features, then remove
+    inter-feature redundancy using target-aware greedy elimination.
+
+    When two features are correlated above the threshold, the one with
+    LOWER absolute correlation to the target is dropped. This preserves
+    the most predictive feature from each correlated group.
+
+    Should be called on TRAINING data only to avoid data leakage.
+
+    Args:
+        df: DataFrame containing all computed features (output of add_features + add_target).
+        corr_threshold: Drop one of any pair of features whose absolute
+                        Pearson correlation exceeds this value (default 0.85).
+    Returns:
+        List of selected feature column names.
+    """
+    # 1. Identify all stationary candidate columns
+    candidates = [c for c in df.columns if c not in NON_STATIONARY_COLS]
+
+    # 2. Compute target relevance for each feature
+    target_corr = df[candidates].corrwith(df['target']).abs().fillna(0)
+
+    # 3. Target-aware greedy removal: for each highly-correlated pair,
+    #    drop the feature with lower |correlation to target|
+    features_df = df[candidates]
+    corr_matrix = features_df.corr().abs()
+    to_drop = set()
+
+    for i in range(len(candidates)):
+        if candidates[i] in to_drop:
+            continue
+        for j in range(i + 1, len(candidates)):
+            if candidates[j] in to_drop:
+                continue
+            if corr_matrix.iloc[i, j] > corr_threshold:
+                # Drop the less target-relevant feature
+                if target_corr[candidates[i]] >= target_corr[candidates[j]]:
+                    to_drop.add(candidates[j])
+                else:
+                    to_drop.add(candidates[i])
+                    break  # feature i was dropped, move to the next i
+
+    selected = [c for c in candidates if c not in to_drop]
+
+    print(f"  -> Feature Selection: {len(candidates)} candidates -> {len(selected)} selected (removed {len(to_drop)} redundant)")
+    if to_drop:
+        print(f"     Dropped for inter-correlation > {corr_threshold}: {sorted(to_drop)}")
+    print(f"     Selected: {selected}")
+
+    return selected
+
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -65,6 +135,17 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Log Returns -> Percentual logarithmic variation between candles
     data['log_ret'] = np.log(data['close'] / data['close'].shift(1))
+
+    # --- SHORT-TERM MOMENTUM (helps detect regime transitions faster) ---
+    data['ROC_1'] = data['close'].pct_change(1)   # 1-day return
+    data['ROC_3'] = data['close'].pct_change(3)   # 3-day return
+    data['ROC_5'] = data['close'].pct_change(5)   # 5-day return
+    data['RSI_5_accel'] = data['RSI_5'].diff().diff()  # RSI acceleration (change of change)
+
+    # --- TREND REGIME SIGNALS (explicit crossover features) ---
+    data['SMA_5_20_cross'] = (data['SMA_5'] - data['SMA_20']) / data['close']  # Normalized SMA crossover
+    data['SMA_10_50_cross'] = (data['SMA_10'] - data['SMA_50']) / data['close']
+    data['EMA_5_20_cross'] = (data['EMA_5'] - data['EMA_20']) / data['close']
 
     return data
 
@@ -145,7 +226,8 @@ def calculate_features(path_list: Optional[List[Path]] = None, lookahead: int = 
         print(f"\n---> Enhancing {path.name}")
         try:
             df = pd.read_csv(path, parse_dates = True)
-            symbol, timeframe, length = path.stem.split("_")
+            symbol, timeframe = path.stem.split("_", maxsplit=1)
+            timeframe = timeframe.split("_")[0]  # strip trailing suffixes like _3082
 
             df_features = add_features(df)
             print("  -> Added indicators")

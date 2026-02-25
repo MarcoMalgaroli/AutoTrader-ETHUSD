@@ -1,38 +1,68 @@
 """
-Trade Logger — persiste i trade live su file JSON.
-Ogni trade ha: id, datetime_signal, datetime_exec, direction, entry_price,
-tp, sl, status (pending | open | closed | cancelled), exit_price, pnl_pct, close_time.
+Trade Logger — persist live trades in a SQLite database.
+Each trade has: id, direction, signal_time, exec_time, entry_price,
+tp, sl, status (pending | open | closed | cancelled), exit_price, pnl_pct,
+close_time, mt5_ticket, confidence, probs, comment.
 """
 
 import json
+import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Optional, List
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-TRADES_FILE = DATA_DIR / "live_trades.json"
+DB_FILE = DATA_DIR / "live_trades.db"
 
 _lock = Lock()
 
+# Column order used when converting rows to dicts
+_COLUMNS = [
+    "id", "direction", "signal_time", "exec_time", "entry_price",
+    "tp", "sl", "exit_price", "pnl_pct", "status", "mt5_ticket",
+    "confidence", "probs", "close_time", "comment",
+]
 
-def _ensure_file() -> None:
+
+def _get_conn() -> sqlite3.Connection:
+    """Return a connection to the SQLite database (creates it if needed)."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not TRADES_FILE.exists():
-        TRADES_FILE.write_text(json.dumps([], indent=2))
+    conn = sqlite3.connect(str(DB_FILE))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id          TEXT PRIMARY KEY,
+            direction   TEXT NOT NULL,
+            signal_time TEXT,
+            exec_time   TEXT,
+            entry_price REAL,
+            tp          REAL,
+            sl          REAL,
+            exit_price  REAL,
+            pnl_pct     REAL,
+            status      TEXT NOT NULL DEFAULT 'pending',
+            mt5_ticket  INTEGER,
+            confidence  REAL,
+            probs       TEXT,
+            close_time  TEXT,
+            comment     TEXT DEFAULT ''
+        )
+    """)
+    conn.commit()
+    return conn
 
 
-def _read_all() -> List[dict]:
-    _ensure_file()
-    with open(TRADES_FILE, "r") as f:
-        return json.load(f)
-
-
-def _write_all(trades: List[dict]) -> None:
-    _ensure_file()
-    with open(TRADES_FILE, "w") as f:
-        json.dump(trades, f, indent=2, default=str)
+def _row_to_dict(row: tuple) -> dict:
+    """Convert a database row to a dict, deserialising the probs JSON."""
+    d = dict(zip(_COLUMNS, row))
+    if d["probs"] is not None:
+        try:
+            d["probs"] = json.loads(d["probs"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return d
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -45,18 +75,18 @@ def create_trade(
     predicted_probs: dict,
     confidence: float,
 ) -> dict:
-    """Registra un nuovo trade in stato *pending* (in attesa di esecuzione alle 00:05)."""
+    """Register a new trade in *pending* state (waiting to be executed at 00:05)."""
     trade = {
         "id": str(uuid.uuid4())[:8],
-        "direction": direction.upper(),        # LONG | SHORT
-        "signal_time": signal_time,            # quando la prediction è avvenuta
-        "exec_time": None,                     # quando l'ordine MT5 è stato inviato
+        "direction": direction.upper(),
+        "signal_time": signal_time,
+        "exec_time": None,
         "entry_price": None,
         "tp": None,
         "sl": None,
         "exit_price": None,
         "pnl_pct": None,
-        "status": "pending",                   # pending → open → closed / cancelled
+        "status": "pending",
         "mt5_ticket": None,
         "confidence": round(confidence, 4),
         "probs": predicted_probs,
@@ -64,22 +94,53 @@ def create_trade(
         "comment": "",
     }
     with _lock:
-        trades = _read_all()
-        trades.append(trade)
-        _write_all(trades)
+        conn = _get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO trades
+                   (id, direction, signal_time, exec_time, entry_price, tp, sl,
+                    exit_price, pnl_pct, status, mt5_ticket, confidence, probs,
+                    close_time, comment)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    trade["id"], trade["direction"], trade["signal_time"],
+                    trade["exec_time"], trade["entry_price"], trade["tp"],
+                    trade["sl"], trade["exit_price"], trade["pnl_pct"],
+                    trade["status"], trade["mt5_ticket"], trade["confidence"],
+                    json.dumps(trade["probs"], default=str),
+                    trade["close_time"], trade["comment"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     return trade
 
 
 def update_trade(trade_id: str, **kwargs) -> Optional[dict]:
-    """Aggiorna uno o più campi di un trade esistente."""
+    """Update one or more fields of an existing trade."""
+    if not kwargs:
+        return None
+    # Serialise probs if present
+    if "probs" in kwargs and not isinstance(kwargs["probs"], str):
+        kwargs["probs"] = json.dumps(kwargs["probs"], default=str)
+
+    set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [trade_id]
+
     with _lock:
-        trades = _read_all()
-        for t in trades:
-            if t["id"] == trade_id:
-                t.update(kwargs)
-                _write_all(trades)
-                return t
-    return None
+        conn = _get_conn()
+        try:
+            conn.execute(f"UPDATE trades SET {set_clause} WHERE id = ?", values)
+            conn.commit()
+            cur = conn.execute(
+                f"SELECT {', '.join(_COLUMNS)} FROM trades WHERE id = ?",
+                (trade_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            conn.close()
+    return _row_to_dict(row) if row else None
 
 
 def mark_open(
@@ -90,7 +151,7 @@ def mark_open(
     mt5_ticket: int,
     exec_time: Optional[str] = None,
 ) -> Optional[dict]:
-    """Segna il trade come aperto dopo l'esecuzione su MT5."""
+    """Mark a trade as open after execution on MT5."""
     return update_trade(
         trade_id,
         status="open",
@@ -108,7 +169,7 @@ def mark_closed(
     pnl_pct: float,
     close_time: Optional[str] = None,
 ) -> Optional[dict]:
-    """Segna il trade come chiuso."""
+    """Mark a trade as closed."""
     return update_trade(
         trade_id,
         status="closed",
@@ -119,43 +180,79 @@ def mark_closed(
 
 
 def mark_cancelled(trade_id: str, comment: str = "") -> Optional[dict]:
-    """Annulla un trade pending (ad es. se MT5 non è disponibile)."""
+    """Cancel a pending trade (e.g. if MT5 is not available)."""
     return update_trade(trade_id, status="cancelled", comment=comment)
 
 
 def get_last_n(n: int = 10) -> List[dict]:
-    """Ritorna gli ultimi *n* trade (più recenti prima)."""
-    trades = _read_all()
-    return list(reversed(trades[-n:]))
+    """Return the last *n* trades (most recent first)."""
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            f"SELECT {', '.join(_COLUMNS)} FROM trades ORDER BY rowid DESC LIMIT ?",
+            (n,),
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [_row_to_dict(r) for r in rows]
 
 
 def get_open_trades() -> List[dict]:
-    """Ritorna tutti i trade attualmente aperti."""
-    return [t for t in _read_all() if t["status"] == "open"]
+    """Return all currently open trades."""
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            f"SELECT {', '.join(_COLUMNS)} FROM trades WHERE status = 'open'"
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [_row_to_dict(r) for r in rows]
 
 
 def get_pending_trades() -> List[dict]:
-    """Ritorna tutti i trade in attesa di esecuzione."""
-    return [t for t in _read_all() if t["status"] == "pending"]
+    """Return all pending trades (waiting to be executed)."""
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            f"SELECT {', '.join(_COLUMNS)} FROM trades WHERE status = 'pending'"
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [_row_to_dict(r) for r in rows]
 
 
 def get_all() -> List[dict]:
-    """Ritorna tutti i trade."""
-    return _read_all()
+    """Return all trades."""
+    conn = _get_conn()
+    try:
+        cur = conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM trades ORDER BY rowid")
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [_row_to_dict(r) for r in rows]
 
 
 def compute_equity_curve(initial_capital: float = 100_000) -> List[dict]:
     """
-    Calcola la equity curve basata sui trade *chiusi* (in ordine cronologico).
-    Ritorna lista di {time, value}.
+    Compute the equity curve based on *closed* trades (in chronological order).
+    Returns a list of {time, value}.
     """
-    trades = _read_all()
-    closed = sorted(
-        [t for t in trades if t["status"] == "closed" and t["pnl_pct"] is not None],
-        key=lambda t: t["close_time"] or "",
-    )
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            f"""SELECT {', '.join(_COLUMNS)} FROM trades
+                WHERE status = 'closed' AND pnl_pct IS NOT NULL
+                ORDER BY close_time""",
+        )
+        closed = [_row_to_dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
     equity = initial_capital
-    curve = [{"time": None, "value": equity}]  # placeholder, will be set from first trade
+    curve = [{"time": None, "value": equity}]
 
     for t in closed:
         equity *= 1 + t["pnl_pct"]
@@ -164,10 +261,9 @@ def compute_equity_curve(initial_capital: float = 100_000) -> List[dict]:
             "value": round(equity, 2),
         })
 
-    # Set first point time from the first trade's exec_time
     if closed:
-        curve[0]["time"] = closed[0].get("exec_time", closed[0].get("signal_time"))
+        curve[0]["time"] = closed[0].get("exec_time") or closed[0].get("signal_time")
     else:
-        curve[0]["time"] = datetime.utcnow().isoformat()
+        curve[0]["time"] = datetime.now(timezone.utc).isoformat()
 
     return curve

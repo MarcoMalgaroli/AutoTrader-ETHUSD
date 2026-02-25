@@ -1,3 +1,4 @@
+import json
 import joblib
 import pandas as pd
 import numpy as np
@@ -11,38 +12,34 @@ from sklearn.utils.class_weight import compute_class_weight
 from pathlib import Path
 import matplotlib.pyplot as plt
 import copy
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from dataset_utils.feature_engineering import select_features
 
-PRINT_WIDTH = 100
+with open(Path(__file__).resolve().parent.parent / "config.json", "r") as f:
+    CONFIG = json.load(f)
+
+PRINT_WIDTH = CONFIG["print_width"]
 
 # Check for a GPU or use CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"\n\x1b[36mUsing device: {device}\x1b[0m")
 
-def set_seed(seed=42):
+def set_seed(seed=CONFIG["lstm_classifier"]["seed"]):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
-# ============= H1 =============
-# SEQ_LEN = 168 # Number of time steps (candles) to look back
-# BATCH_SIZE = 32
-# EPOCHS = 100
-# LEARNING_RATE = 0.001
-# HIDDEN_SIZE = 256
-# NUM_LAYERS = 2
-# NUM_CLASSES = 3 # 0: Hold, 1: Long, 2: Short
-# DROPOUT = 0.5
-
 # ============= D1 =============
-SEQ_LEN = 60 # Number of time steps (candles) to look back
-BATCH_SIZE = 32
-EPOCHS = 100
-LEARNING_RATE = 0.0005
-HIDDEN_SIZE = 16
-NUM_LAYERS = 1
-NUM_CLASSES = 3 # 0: Hold, 1: Long, 2: Short
-DROPOUT = 0.4
+SEQ_LEN = CONFIG["lstm_classifier"]["seq_len"]
+BATCH_SIZE = CONFIG["lstm_classifier"]["batch_size"]
+EPOCHS = CONFIG["lstm_classifier"]["epochs"]
+LEARNING_RATE = CONFIG["lstm_classifier"]["learning_rate"]
+HIDDEN_SIZE = CONFIG["lstm_classifier"]["hidden_size"]
+NUM_LAYERS = CONFIG["lstm_classifier"]["num_layers"]
+NUM_CLASSES = CONFIG["lstm_classifier"]["num_classes"]
+DROPOUT = CONFIG["lstm_classifier"]["dropout"]
 
 # --- DATA PREPARATION ---
 # Note: each row contains the target of the action to perform at the opening at the next candle
@@ -55,7 +52,7 @@ def create_sequences(data, target, seq_len):
         ys.append(y)
     return np.array(xs), np.array(ys)
 
-def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: float = 0.15):
+def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: float = CONFIG["lstm_classifier"]["val_pct"]):
     """
     Prepare dataloaders for training and validation.
     Train goes from 0 to len(df)-predict_window * (1 - val_pct), Validation goes from Train end (including SEQ_LEN-1 candles for context) to end - lookahead_days.
@@ -66,17 +63,7 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
     """
 
     df = data.copy()
-    df['target'] = df['target'].map({-1: 2, 0: 0, 1: 1}) # Map -1 to 2 (Short), 0 to 0 (Hold), and +1 to 1 (Long)
     print(f"---> Loading dataset from DataFrame with shape {df.shape}...")
-
-    feature_cols = [
-        'candle_body', 'candle_shadow_up', 'candle_shadow_low',
-        'RSI_15', 'dist_SMA_20', 'dist_SMA_50', 'MACD_norm',
-        'ATR_norm', 'BB_width_pct', 'OBV_pct', 'log_ret',
-        'vol_rel', 'ROC_10',
-    ]
-
-    print(f"  -> Features ({len(feature_cols)}): {feature_cols}")
     print(f"  -> Total samples in dataset: {len(df)}")
 
     valid_data_end = len(df) - lookahead_days
@@ -85,8 +72,19 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
     split_idx = int(len(labeled_df) * (1 - val_pct))
 
     train_df = labeled_df.iloc[:split_idx].copy()
-    
     val_df = labeled_df.iloc[split_idx - SEQ_LEN + 1:].copy()
+
+    # Feature selection: auto or manual
+    fs_cfg = CONFIG["lstm_classifier"]["feature_selection"]
+    if fs_cfg["mode"] == "auto":
+        feature_cols = select_features(train_df, corr_threshold=fs_cfg["corr_threshold"])
+        print(f"  -> Auto-selected features ({len(feature_cols)}): {feature_cols}")
+    else:
+        feature_cols = fs_cfg["feature_cols"]
+        print(f"  -> Manual features ({len(feature_cols)}): {feature_cols}")
+
+    train_df['target'] = train_df['target'].map({-1: 2, 0: 0, 1: 1})
+    val_df['target'] = val_df['target'].map({-1: 2, 0: 0, 1: 1})
     print(f"  -> Training samples: {len(train_df)}, from {train_df.index[0]} to {train_df.index[-1]}")
     print(f"  -> Validation samples: {len(val_df)}, from {val_df.index[0]} to {val_df.index[-1]} (including {SEQ_LEN-1} candles for context)")
 
@@ -116,7 +114,7 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
     val_data = TensorDataset(torch.from_numpy(X_val_seq).float(), torch.from_numpy(y_val_seq).long())
     print(f"  -> Number of validation samples (each composed by {SEQ_LEN} time steps): {len(val_data)}")
     
-    train_loader = DataLoader(train_data, shuffle=True, batch_size=BATCH_SIZE)
+    train_loader = DataLoader(train_data, shuffle=False, batch_size=BATCH_SIZE)
     print(f"  -> Number of batches in train set (each composed by {BATCH_SIZE} samples): {len(train_loader)}")
     val_loader = DataLoader(val_data, shuffle=False, batch_size=BATCH_SIZE)
     print(f"  -> Number of batches in val set (each composed by {BATCH_SIZE} samples): {len(val_loader)}")
@@ -149,13 +147,13 @@ class CryptoLSTM(nn.Module):
         return out
 
 
-def train_lstm_model(df: pd.DataFrame, lookahead_days=10, plot_results=True):
+def train_lstm_classifier(df: pd.DataFrame, lookahead_days=10, plot_results=True):
     print("\n" + " LSTM TRAINING ".center(PRINT_WIDTH, "="))
     
-    set_seed(42)
+    set_seed(CONFIG["lstm_classifier"]["seed"])
     
     # --- DATA PREPARATION ---
-    train_loader, val_loader, feature_cols, scaler, y_train = prepare_dataloader(df, lookahead_days=lookahead_days, val_pct=0.15)
+    train_loader, val_loader, feature_cols, scaler, y_train = prepare_dataloader(df, lookahead_days=lookahead_days, val_pct=CONFIG["lstm_classifier"]["val_pct"])
 
     # Model Initialization
     model = CryptoLSTM(len(feature_cols), HIDDEN_SIZE, NUM_LAYERS, output_size = NUM_CLASSES, dropout_prob=DROPOUT).to(device)
@@ -163,8 +161,8 @@ def train_lstm_model(df: pd.DataFrame, lookahead_days=10, plot_results=True):
     # Loss and Optimizer
     # 1. Calculate weights based on the frequency in the train set
     class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y_train), y=y_train)
-    class_weights = torch.sqrt(torch.tensor(class_weights, dtype=torch.float)).to(device)  # Dampen with sqrt to avoid over-trading
-    print(f"\n  -> Calculated Class Weights (sqrt-dampened): {class_weights}")
+    class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
+    print(f"\n  -> Calculated Class Weights (balanced): {class_weights}")
 
     criterion = nn.CrossEntropyLoss(weight=class_weights) # Cross Entropy Loss for multi-class classification
     optimizer = optim.Adam(model.parameters(), lr = LEARNING_RATE, weight_decay=1e-4)
@@ -179,7 +177,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler=None,
 
     best_loss = float('inf')
     best_val_acc = 0.0
-    patience = 15
+    patience = CONFIG["lstm_classifier"]["early_stopping_patience"]
     trigger_times = 0
     best_model_wts = copy.deepcopy(model.state_dict())
 
@@ -306,7 +304,7 @@ def evaluate(model, test_loader):
     print(f"     Avg Confidence for winner class: {np.max(probs_np, axis=1).mean():.4f}")
     print()
 
-    threshold = 0.40
+    threshold = CONFIG["trading"]["threshold"]
     
     for class_idx, class_name in zip([1, 2], ['Long', 'Short']):
         # select only the predictions where the probability for this class is > 60%
@@ -324,6 +322,29 @@ def evaluate(model, test_loader):
     
     return pd.Series(all_targets).map({2: -1, 0: 0, 1: 1}), pd.Series(all_preds).map({2: -1, 0: 0, 1: 1}), probs_np[:, [2, 0, 1]]
 
+def batch_predict_lstm(model, df, feature_cols, scaler, seq_len, start_idx, end_idx):
+    """Execute batch prediction for LSTM (sequence-based)."""
+    model.eval()
+    sequences = []
+    valid_indices = []
+    
+    for i in range(start_idx, end_idx):
+        if i < seq_len: continue
+        seq_data = df.iloc[i - seq_len + 1 : i + 1][feature_cols].copy()
+        seq_scaled = scaler.transform(seq_data)
+        sequences.append(seq_scaled)
+        valid_indices.append(i)
+
+    if not sequences:
+        return [], [], []
+
+    X_batch = torch.FloatTensor(np.array(sequences)).to(device)
+    with torch.no_grad():
+        outputs = model(X_batch)
+        probs = torch.softmax(outputs, dim=1)
+        _, preds = torch.max(outputs, 1)
+        
+    return preds.cpu().numpy(), probs.cpu().numpy(), valid_indices
 
 def predict_next_move(model, df, feature_cols, scaler):
     """

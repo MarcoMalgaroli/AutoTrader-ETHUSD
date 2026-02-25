@@ -4,55 +4,58 @@ Serves OHLC data, backtest trades, equity curve, AI predictions,
 and LIVE trading data with scheduled execution.
 """
 
+import json
 import sys
 from pathlib import Path
-from datetime import datetime
+from contextlib import asynccontextmanager
 
 # Add project root to path so we can import project modules
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+with open(PROJECT_ROOT / "config.json", "r") as f:
+    CONFIG = json.load(f)
+
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
-import machine_learning.lstm as lstm
-from dataset_utils import feature_engineering
-from backtest import backtest as bt
+import machine_learning.lstm_classifier as lstm
+from dataset_utils import dataset_utils, feature_engineering
+from backtest import backtest_triple_barrier as bt
 from live_trading import trader as live_trader
 from live_trading import trade_logger
 from models.MT5Services import MT5Services
 
+def log(msg: str):
+    print(f"[\x1b[44mDashboard\x1b[0m] {msg}")
+
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-SYMBOL = "ETHUSD"
-DATASET_RAW = PROJECT_ROOT / "datasets" / "raw" / "ETHUSD_D1_3082.csv"
-DATASET_FINAL = PROJECT_ROOT / "datasets" / "final" / "ETHUSD_D1_3082.csv"
-LOOKAHEAD = 10
-ATR_MULT = 2.0
-BACKTEST_WINDOW = 365
-PREDICT_WINDOW = 30
-INITIAL_CAPITAL = 100_000
-THRESHOLD = 0.40
-POSITION_SIZE = 0.1
+SYMBOL = CONFIG["symbol"]
+DATASET_RAW = PROJECT_ROOT / CONFIG["paths"]["dataset_raw"]
+DATASET_FINAL = PROJECT_ROOT / CONFIG["paths"]["dataset_final"]
+LOOKAHEAD = CONFIG["trading"]["lookahead"]
+ATR_MULT = CONFIG["trading"]["atr_mult"]
+BACKTEST_WINDOW = CONFIG["backtest"]["backtest_window"]
+PREDICT_WINDOW = CONFIG["backtest"]["predict_window"]
+INITIAL_CAPITAL = CONFIG["trading"]["initial_capital"]
+THRESHOLD = CONFIG["trading"]["threshold"]
+POSITION_SIZE = CONFIG["trading"]["position_size"]
 
-# ─── APP ─────────────────────────────────────────────────────────────────────
-app = FastAPI(title=f"{SYMBOL} AI Dashboard")
-templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
-
-# ─── MT5 CONNECTION (opzionale) ──────────────────────────────────────────────
+# ─── MT5 CONNECTION ──────────────────────────────────────────────────────────
 _mt5_service = None
 
 def _try_connect_mt5():
     global _mt5_service
     try:
         _mt5_service = MT5Services(SYMBOL)
-        print("[Dashboard] ✅ Connesso a MetaTrader 5")
+        log("\x1b[32mConnect to MetaTrader 5\x1b[0m")
     except Exception as e:
-        print(f"[Dashboard] ⚠ MT5 non disponibile: {e}")
+        log(f"\x1b[31mMT5 is unavailable: {e}\x1b[0m")
         _mt5_service = None
 
 # ─── SCHEDULER ───────────────────────────────────────────────────────────────
@@ -63,120 +66,139 @@ _cache: dict = {}
 
 
 def _ensure_data():
-    """Load (or reload) dataset, run backtest & live prediction once, cache results."""
+    """Load (or reload) dataset, run backtest & live prediction once, cache results.
+    Stores any error in _cache['_error'] so API routes can return it to clients.
+    """
+    if "_error" in _cache:
+        return  # already failed — don't retry automatically
     if _cache:
         return
 
-    print("[Dashboard] Loading dataset and running pipeline...")
+    try:
+        log("\x1b[36mLoading dataset and running pipeline...\x1b[0m")
 
-    # 1. Feature engineering (uses raw → final)
-    path_list_final = feature_engineering.calculate_features(
-        [DATASET_RAW], lookahead=LOOKAHEAD, atr_mult=ATR_MULT
-    )
-    final_path = path_list_final[0]
+        # 1. Generate dataset from MT5 (if connected) or load existing raw datasets
+        if _mt5_service:
+            # load from MT5 and save to raw
+            path_list_raw = dataset_utils.generate_dataset(_mt5_service)
+        else:
+            # fallback: load existing raw datasets if MT5 not connected
+            log("\x1b[33mUsing existing dataset files (MT5 not connected)\x1b[0m")
+            path_list_raw = list(DATASET_RAW.glob("*.csv"))
+            if not path_list_raw:
+                raise RuntimeError(f"No dataset found at {DATASET_RAW}")
 
-    df_full = pd.read_csv(final_path)
-    df_full["time"] = pd.to_datetime(df_full["time"])
+        # 2. Validate raw datasets before proceeding
+        if not dataset_utils.validate_dataset(path_list_raw):
+            raise RuntimeError("Dataset validation failed. Check server logs for details.")
 
-    # 2. Train model on full data for live prediction
-    model, scaler, feature_cols = lstm.train_lstm_model(
-        df_full, lookahead_days=LOOKAHEAD, plot_results=False
-    )
-    probs = lstm.predict_next_move(model, df_full, feature_cols, scaler)
+        # 3. Feature engineering (uses raw → final)
+        path_list_final = feature_engineering.calculate_features(
+            path_list_raw, lookahead=LOOKAHEAD, atr_mult=ATR_MULT
+        )
 
-    _cache["live_prediction"] = {
-        "hold": float(probs[0]),
-        "long": float(probs[1]),
-        "short": float(probs[2]),
-        "action": ["HOLD", "LONG", "SHORT"][int(np.argmax(probs))],
-        "confidence": float(np.max(probs)),
-        "last_close": float(df_full.iloc[-1]["close"]),
-        "last_time": str(df_full.iloc[-1]["time"]),
-    }
+        # 4. Cache final datasets
+        final_path = None
+        for path in path_list_final:
+            tf = path.stem.split('_')[-1]
+            _cache["df_" + tf] = pd.read_csv(path)
+            if tf == "D1":
+                final_path = path
 
-    # 3. Backtest
-    res = bt.backtest_triple_barrier(
-        df_full,
-        BACKTEST_WINDOW,
-        PREDICT_WINDOW,
-        INITIAL_CAPITAL,
-        LOOKAHEAD,
-        ATR_MULT,
-        threshold=THRESHOLD,
-        position_size=POSITION_SIZE,
-    )
-    _cache["backtest_result"] = res
-    _cache["df"] = df_full
-    _cache["backtest_window"] = BACKTEST_WINDOW
+        if not final_path:
+            final_path = path_list_final[0]
 
-    # 4. Rebuild detailed trade list from backtest equity engine
-    n = len(df_full)
-    start_point = n - BACKTEST_WINDOW
-    bt_df = df_full.iloc[start_point:].copy().reset_index(drop=True)
-    pred_arr = np.zeros(len(bt_df), dtype=int)
+        df_full = pd.read_csv(final_path)
+        df_full["time"] = pd.to_datetime(df_full["time"])
 
-    # Re-derive signals from equity curve changes
-    eq = res.equity_curve.values
-    trades = []
-    close_arr = bt_df["close"].values
-    open_arr = bt_df["open"].values
-    atr_arr = bt_df["ATR_14"].values
-    time_arr = bt_df["time"].values
+        # 5. Train model on full data for live prediction
+        model, scaler, feature_cols = lstm.train_lstm_classifier(
+            df_full, lookahead_days=LOOKAHEAD, plot_results=False
+        )
+        probs = lstm.predict_next_move(model, df_full, feature_cols, scaler)
 
-    # Walk through backtest result: reconstruct from trade_returns
-    tr = res.trade_returns.values
-    trade_idx = 0
-    for i in range(len(bt_df) - 1):
-        if trade_idx < len(tr) and tr[trade_idx] != 0.0:
-            ret = tr[trade_idx]
-            signal_price = close_arr[i]
-            atr = atr_arr[i]
-            entry = open_arr[i + 1] if i + 1 < len(open_arr) else signal_price
-            upper_b = signal_price + ATR_MULT * atr
-            lower_b = signal_price - ATR_MULT * atr
+        _cache["live_prediction"] = {
+            "hold": float(probs[0]),
+            "long": float(probs[1]),
+            "short": float(probs[2]),
+            "action": ["HOLD", "LONG", "SHORT"][int(np.argmax(probs))],
+            "confidence": float(np.max(probs)),
+            "last_close": float(df_full.iloc[-1]["close"]),
+            "last_time": str(df_full.iloc[-1]["time"]),
+        }
 
-            # Determine direction from return sign and price relationship
-            direction = "LONG" if ret > 0 and entry < upper_b or ret < 0 and entry > lower_b else "SHORT"
-            # Simpler: use equity change direction with entry price
-            if abs(ret) > 0.0001:
-                trades.append({
-                    "time": str(pd.Timestamp(time_arr[i])),
-                    "direction": direction,
-                    "entry": round(float(entry), 2),
-                    "tp": round(float(upper_b if direction == "LONG" else lower_b), 2),
-                    "sl": round(float(lower_b if direction == "LONG" else upper_b), 2),
-                    "return_pct": round(float(ret) * 100, 3),
-                    "win": bool(ret > 0),
-                })
-        trade_idx += 1
+        # 6. Backtest
+        res, trades = bt.backtest_triple_barrier(
+            df_full,
+            BACKTEST_WINDOW,
+            PREDICT_WINDOW,
+            INITIAL_CAPITAL,
+            LOOKAHEAD,
+            ATR_MULT,
+            threshold=THRESHOLD,
+            position_size=POSITION_SIZE,
+        )
+        _cache["backtest_result"] = res
+        _cache["df"] = df_full
+        _cache["backtest_window"] = BACKTEST_WINDOW
+        _cache["backtest_trades"] = trades
 
-    _cache["trades"] = trades
-    print(f"[Dashboard] Ready — {len(trades)} trades cached.")
+        log(f"Ready — {len(trades)} trades cached.")
+
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        _cache["_error"] = str(exc)
+        log(f"\x1b[31mPipeline failed: {exc}\x1b[0m")
 
 
-# ─── ROUTES ──────────────────────────────────────────────────────────────────
+def _check_data_ready():
+    """Call after _ensure_data(); returns a JSONResponse with the error if the
+    pipeline failed, or None if everything is loaded and ready."""
+    if "_error" in _cache:
+        return JSONResponse(
+            status_code=503,
+            content={"error": _cache["_error"]},
+        )
+    if "df" not in _cache:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Data not loaded yet."},
+        )
+    return None
 
-@app.on_event("startup")
-async def startup():
+
+
+# ─── APP ─────────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log("\x1b[32mSTARTUP...\x1b[0m")
     global _scheduler
-    _ensure_data()
-    # Connetti a MT5 (se disponibile)
+    # Connect to MT5 (if available)
     _try_connect_mt5()
-    # Avvia lo scheduler per il live trading
+    _ensure_data()
+    # Startup live trading scheduler
     _scheduler = live_trader.setup_scheduler(mt5_service=_mt5_service)
     _scheduler.start()
-    print("[Dashboard] 🚀 Scheduler avviato")
+    log("\x1b[32mScheduler started\x1b[0m")
+    
+    yield
 
-
-@app.on_event("shutdown")
-async def shutdown():
-    global _scheduler
     if _scheduler:
         _scheduler.shutdown(wait=False)
-        print("[Dashboard] Scheduler fermato")
+        log("\x1b[31mScheduler stopped\x1b[0m")
     if _mt5_service:
         _mt5_service.shutdown()
+        log("\x1b[31mMT5 connection closed\x1b[0m")
+    
+    log("\x1b[31mSHUTDOWN complete\x1b[0m")
 
+app = FastAPI(title=f"{SYMBOL} AI Dashboard", lifespan=lifespan)
+templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
+app.mount("/public", StaticFiles(directory=Path(__file__).parent / "src"), name="public")
+
+# ─── ROUTES ──────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -187,6 +209,8 @@ async def index(request: Request):
 async def api_candles(last_n: int = Query(400, ge=30, le=5000)):
     """OHLC candlestick data for the chart."""
     _ensure_data()
+    if err := _check_data_ready():
+        return err
     df = _cache["df"]
     subset = df.tail(last_n)
     records = []
@@ -205,6 +229,8 @@ async def api_candles(last_n: int = Query(400, ge=30, le=5000)):
 async def api_indicators(last_n: int = Query(400, ge=30, le=5000)):
     """SMA / EMA overlay data."""
     _ensure_data()
+    if err := _check_data_ready():
+        return err
     df = _cache["df"].tail(last_n)
     sma = []
     ema = []
@@ -217,10 +243,13 @@ async def api_indicators(last_n: int = Query(400, ge=30, le=5000)):
     return {"sma50": sma, "ema20": ema}
 
 
-@app.get("/api/equity")
+# API endpoint for backtest
+@app.get("/api/bt/equity")
 async def api_equity():
     """Equity curve data."""
     _ensure_data()
+    if err := _check_data_ready():
+        return err
     res = _cache["backtest_result"]
     records = []
     for ts, val in zip(res.equity_curve.index, res.equity_curve.values):
@@ -231,17 +260,21 @@ async def api_equity():
     return records
 
 
-@app.get("/api/trades")
+@app.get("/api/bt/trades")
 async def api_trades():
     """List of backtest trades with TP/SL levels."""
     _ensure_data()
-    return _cache["trades"]
+    if err := _check_data_ready():
+        return err
+    return _cache["backtest_trades"]
 
 
-@app.get("/api/stats")
+@app.get("/api/bt/stats")
 async def api_stats():
     """Backtest summary statistics."""
     _ensure_data()
+    if err := _check_data_ready():
+        return err
     s = _cache["backtest_result"].summary
     return {
         "initial_capital": INITIAL_CAPITAL,
@@ -259,47 +292,33 @@ async def api_stats():
         "threshold": THRESHOLD,
     }
 
-
-@app.get("/api/prediction")
-async def api_prediction():
-    """Current AI prediction for the next candle."""
-    _ensure_data()
-    return _cache["live_prediction"]
-
-
-@app.get("/api/signals")
+@app.get("/api/bt/signals")
 async def api_signals(last_n: int = Query(400, ge=30, le=5000)):
     """Trade signal markers for the chart (from backtest)."""
     _ensure_data()
+    if err := _check_data_ready():
+        return err
     df = _cache["df"]
     n = len(df)
     start = n - BACKTEST_WINDOW
 
-    # Re-derive from backtest_result trade_returns
-    res = _cache["backtest_result"]
-    bt_df = df.iloc[start:].copy()
-    tr = res.trade_returns.values
+    trades = _cache["backtest_trades"]
     markers = []
 
-    for i in range(min(len(bt_df) - 1, len(tr))):
-        ret = tr[i]
-        if abs(ret) < 1e-8:
+    for t in trades:
+        ret = t["return_pct"]
+        direction = t["direction"]
+
+        try:
+            ts = int(pd.Timestamp(t["time"]).timestamp())
+        except Exception:
             continue
-        row = bt_df.iloc[i]
-        ts = int(pd.Timestamp(row["time"]).timestamp())
-        close = float(row["close"])
-        atr = float(row["ATR_14"])
-
-        # Infer direction: if return is positive, it could be either direction.
-        # Use the simpler heuristic: match with target label if available
-        target = int(row["target"])
-        direction = "long" if target == 1 else ("short" if target == -1 else ("long" if ret > 0 else "short"))
-
+        
         markers.append({
             "time": ts,
-            "position": "belowBar" if direction == "long" else "aboveBar",
+            "position": "belowBar" if direction == "LONG" else "aboveBar",
             "color": "#26a69a" if ret > 0 else "#ef5350",
-            "shape": "arrowUp" if direction == "long" else "arrowDown",
+            "shape": "arrowUp" if direction == "LONG" else "arrowDown",
             "text": f"{'W' if ret > 0 else 'L'} {ret*100:+.1f}%",
             "size": 2,
         })
@@ -309,11 +328,18 @@ async def api_signals(last_n: int = Query(400, ge=30, le=5000)):
 
 # ─── LIVE TRADING ROUTES ─────────────────────────────────────────────────────
 
+@app.get("/api/prediction")
+async def api_prediction():
+    """Current AI prediction for the next candle."""
+    _ensure_data()
+    if err := _check_data_ready():
+        return err
+    return _cache["live_prediction"]
+
 @app.get("/api/live/status")
 async def api_live_status():
-    """Stato corrente del live trader: scheduler, MT5, ultimo segnale."""
+    """Current live trader status: scheduler, MT5, last signal."""
     status = live_trader.get_status()
-    # Aggiungi info dal scheduler sui prossimi run
     if _scheduler and _scheduler.running:
         jobs = {j.id: j for j in _scheduler.get_jobs()}
         pred_job = jobs.get("daily_prediction")
@@ -325,13 +351,13 @@ async def api_live_status():
 
 @app.get("/api/live/trades")
 async def api_live_trades(last_n: int = Query(20, ge=1, le=200)):
-    """Ultimi N trade live (più recenti prima)."""
+    """Last N live trades (most recent first)."""
     return trade_logger.get_last_n(last_n)
 
 
 @app.get("/api/live/equity")
 async def api_live_equity():
-    """Equity curve basata sui trade live chiusi."""
+    """Equity curve based on live closed trades."""
     curve = trade_logger.compute_equity_curve(INITIAL_CAPITAL)
     result = []
     for pt in curve:
@@ -346,21 +372,21 @@ async def api_live_equity():
 
 @app.post("/api/live/run-now")
 async def api_live_run_now():
-    """Trigger manuale: esegue prediction + execution immediatamente."""
+    """Manual trigger: execute prediction + immediate execution."""
     live_trader.run_now(mt5_service=_mt5_service)
-    return {"status": "ok", "message": "Prediction + Execution completati"}
+    return {"status": "ok", "message": "Prediction + Execution completed"}
 
 
 @app.post("/api/live/predict-now")
 async def api_live_predict_now():
-    """Trigger manuale: esegue solo prediction."""
+    """Manual trigger: execute solo prediction."""
     live_trader.job_predict(mt5_service=_mt5_service)
     return {"status": "ok", "prediction": live_trader.state.get("last_prediction")}
 
 
 @app.post("/api/live/execute-now")
 async def api_live_execute_now():
-    """Trigger manuale: esegue il trade pending."""
+    """Manual trigger: execute il trade pending."""
     live_trader.job_execute(mt5_service=_mt5_service)
     return {"status": "ok", "pending": live_trader.state.get("pending_trade_id")}
 
@@ -368,4 +394,4 @@ async def api_live_execute_now():
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("dashboard.app:app", host="127.0.0.1", port=8050, reload=False)
+    uvicorn.run("dashboard.app:app", host=CONFIG["dashboard"]["host"], port=CONFIG["dashboard"]["port"], reload=False)
