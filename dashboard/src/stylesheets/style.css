@@ -135,3 +135,33 @@ body {
     font-size: .78rem;
     padding: .25rem .6rem;
 }
+
+/* ── Main pills ─────────────────────────────────────────────────── */
+#mainTabs .nav-link {
+    color: var(--clr-muted);
+    border-radius: .375rem;
+    font-weight: 500;
+}
+
+#mainTabs .nav-link.active {
+    color: #fff;
+    background: var(--clr-green);
+}
+
+#mainTabs .nav-link:hover:not(.active) {
+    color: #fff;
+}
+
+/* ── Backtest form ──────────────────────────────────────────────── */
+#tab-backtest .form-control,
+#tab-backtest .form-select {
+    background: var(--clr-bg);
+    border-color: var(--clr-border);
+    color: #c9d1d9;
+}
+
+#tab-backtest .form-control:focus,
+#tab-backtest .form-select:focus {
+    border-color: var(--clr-green);
+    box-shadow: 0 0 0 .15rem rgba(38, 166, 154, .25);
+}

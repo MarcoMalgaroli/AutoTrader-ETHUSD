@@ -93,11 +93,11 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
     # Conversion to PyTorch Tensors (no sequences — each sample is a flat feature vector)
     train_data = TensorDataset(
         torch.from_numpy(X_train_scaled).float(),
-        torch.from_numpy(y_train).long()
+        torch.from_numpy(y_train.copy()).long()
     )
     val_data = TensorDataset(
         torch.from_numpy(X_val_scaled).float(),
-        torch.from_numpy(y_val).long()
+        torch.from_numpy(y_val.copy()).long()
     )
 
     train_loader = DataLoader(train_data, shuffle=True, batch_size=BATCH_SIZE)

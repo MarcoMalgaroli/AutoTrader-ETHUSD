@@ -50,6 +50,16 @@ def _get_conn() -> sqlite3.Connection:
             comment     TEXT DEFAULT ''
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS equity_snapshots (
+            date        TEXT PRIMARY KEY,
+            equity      REAL NOT NULL,
+            balance     REAL,
+            margin      REAL,
+            free_margin REAL,
+            source      TEXT NOT NULL DEFAULT 'mt5'
+        )
+    """)
     conn.commit()
     return conn
 
@@ -267,3 +277,56 @@ def compute_equity_curve(initial_capital: float = 100_000) -> List[dict]:
         curve[0]["time"] = datetime.now(timezone.utc).isoformat()
 
     return curve
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Equity Snapshots (daily real account equity from MT5)
+# ──────────────────────────────────────────────────────────────────────
+
+def record_equity_snapshot(
+    equity: float,
+    balance: Optional[float] = None,
+    margin: Optional[float] = None,
+    free_margin: Optional[float] = None,
+    date: Optional[str] = None,
+    source: str = "mt5",
+) -> None:
+    """Record (or update) a daily equity snapshot.
+    Uses today's date by default. Upserts so only one row per date."""
+    date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with _lock:
+        conn = _get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO equity_snapshots (date, equity, balance, margin, free_margin, source)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(date) DO UPDATE SET
+                       equity=excluded.equity,
+                       balance=excluded.balance,
+                       margin=excluded.margin,
+                       free_margin=excluded.free_margin,
+                       source=excluded.source""",
+                (date, round(equity, 2), balance and round(balance, 2),
+                 margin and round(margin, 2), free_margin and round(free_margin, 2), source),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_equity_snapshots() -> List[dict]:
+    """Return all equity snapshots ordered by date."""
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            "SELECT date, equity, balance, margin, free_margin, source "
+            "FROM equity_snapshots ORDER BY date"
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [
+        {"date": r[0], "equity": r[1], "balance": r[2],
+         "margin": r[3], "free_margin": r[4], "source": r[5]}
+        for r in rows
+    ]

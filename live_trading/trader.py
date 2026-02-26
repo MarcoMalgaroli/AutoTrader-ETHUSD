@@ -231,11 +231,24 @@ def job_execute(mt5_service=None):
             ticket = result.order if hasattr(result, "order") else 0
             entry = result.price if hasattr(result, "price") else last_close
 
+            # Read back actual TP/SL set by MT5 (based on live bid/ask)
+            actual_tp, actual_sl = tp, sl
+            if ticket and mt5_service is not None:
+                try:
+                    import MetaTrader5 as _mt5
+                    pos = _mt5.positions_get(ticket=ticket)
+                    if pos and len(pos) > 0:
+                        actual_tp = pos[0].tp
+                        actual_sl = pos[0].sl
+                        log(f"  MT5 actual TP={actual_tp:.2f}  SL={actual_sl:.2f}")
+                except Exception as e2:
+                    log(f"  Could not read back MT5 TP/SL: {e2}")
+
             trade_logger.mark_open(
                 trade_id=trade_id,
                 entry_price=entry,
-                tp=tp,
-                sl=sl,
+                tp=actual_tp,
+                sl=actual_sl,
                 mt5_ticket=ticket,
             )
             state["pending_trade_id"] = None

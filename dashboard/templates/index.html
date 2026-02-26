@@ -15,6 +15,21 @@
     <span class="navbar-brand mb-0 h5">
         <i class="bi bi-graph-up-arrow me-2 text-success"></i>{{ symbol }} <small class="text-muted fw-normal">AI Trading Dashboard</small>
     </span>
+
+    <!-- Center: main navigation pills -->
+    <ul class="nav nav-pills" id="mainTabs" role="tablist">
+        <li class="nav-item">
+            <button class="nav-link active" id="tab-dashboard-btn" data-bs-toggle="pill" data-bs-target="#tab-dashboard" type="button" role="tab">
+                <i class="bi bi-speedometer2 me-1"></i>Dashboard
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="tab-backtest-btn" data-bs-toggle="pill" data-bs-target="#tab-backtest" type="button" role="tab">
+                <i class="bi bi-clock-history me-1"></i>Backtest
+            </button>
+        </li>
+    </ul>
+
     <div class="d-flex align-items-center gap-3">
         <span class="small">
             <span class="status-dot" id="scheduler-dot"></span>
@@ -28,7 +43,7 @@
     </div>
 </nav>
 
-<div class="container-fluid px-3 py-3">
+<div class="container-fluid px-3 pb-3">
 
     <!-- ─── PIPELINE ERROR BANNER ────────────────────────────────────── -->
     <div class="alert alert-danger d-none d-flex align-items-center mb-3" role="alert" id="pipeline-error">
@@ -39,231 +54,138 @@
         </div>
     </div>
 
-    <!-- ─── TOP ROW: STATS CARDS ─────────────────────────────────────── -->
-    <div class="row g-2 mb-3" id="stats-row">
-        <div class="col-6 col-md-3 col-xl">
-            <div class="card p-3 text-center h-100">
-                <div class="stat-label">Final Equity</div>
-                <div class="stat-value" id="st-equity">—</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-xl">
-            <div class="card p-3 text-center h-100">
-                <div class="stat-label">Total Return</div>
-                <div class="stat-value" id="st-return">—</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-xl">
-            <div class="card p-3 text-center h-100">
-                <div class="stat-label">Trades</div>
-                <div class="stat-value" id="st-trades">—</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-xl">
-            <div class="card p-3 text-center h-100">
-                <div class="stat-label">Hit Rate</div>
-                <div class="stat-value" id="st-hitrate">—</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-xl">
-            <div class="card p-3 text-center h-100">
-                <div class="stat-label">Max Drawdown</div>
-                <div class="stat-value" id="st-dd">—</div>
-            </div>
-        </div>
-        <div class="col-6 col-md-3 col-xl">
-            <div class="card p-3 text-center h-100">
-                <div class="stat-label">Avg Return</div>
-                <div class="stat-value" id="st-avgret">—</div>
-            </div>
-        </div>
-    </div>
+    <div class="tab-content" id="mainTabContent">
 
-    <!-- ─── MAIN CONTENT ─────────────────────────────────────────────── -->
-    <div class="row g-3">
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- TAB 1: DASHBOARD (main)                                        -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <div class="tab-pane fade show active" id="tab-dashboard" role="tabpanel">
 
-        <!-- LEFT: Charts -->
-        <div class="col-lg-8">
-            <!-- Candlestick -->
-            <div class="card mb-3">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-bar-chart-fill me-1"></i>{{ symbol }} — Daily</span>
-                    <div>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="setRange(180, event)">6M</button>
-                        <button class="btn btn-sm btn-outline-secondary active" onclick="setRange(365, event)">1Y</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="setRange(730, event)">2Y</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="setRange(0, event)">All</button>
-                    </div>
-                </div>
-                <div class="card-body p-0">
-                    <div id="chart-candles" class="chart-container" style="height:420px;"></div>
-                </div>
-            </div>
-            <!-- Equity Curve with Tabs -->
-            <div class="card">
-                <div class="card-header p-0">
-                    <ul class="nav nav-tabs" role="tablist">
-                        <li class="nav-item">
-                            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-eq-backtest" type="button">
-                                <i class="bi bi-clock-history me-1"></i>Backtest Equity
-                            </button>
-                        </li>
-                        <li class="nav-item">
-                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-eq-live" type="button">
-                                <i class="bi bi-lightning-fill me-1 text-warning"></i>Live Equity
-                            </button>
-                        </li>
-                    </ul>
-                </div>
-                <div class="card-body p-0">
-                    <div class="tab-content">
-                        <div class="tab-pane fade show active" id="tab-eq-backtest">
-                            <div id="chart-equity" class="chart-container" style="height:220px;"></div>
+            <div class="row g-3">
+
+                <!-- LEFT: Charts -->
+                <div class="col-lg-8">
+                    <!-- Candlestick -->
+                    <div class="card mb-3">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-bar-chart-fill me-1"></i>{{ symbol }} — Daily</span>
+                            <div>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="setRange(180, event)">6M</button>
+                                <button class="btn btn-sm btn-outline-secondary active" onclick="setRange(365, event)">1Y</button>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="setRange(730, event)">2Y</button>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="setRange(0, event)">All</button>
+                            </div>
                         </div>
-                        <div class="tab-pane fade" id="tab-eq-live">
+                        <div class="card-body p-0">
+                            <div id="chart-candles" class="chart-container" style="height:420px;"></div>
+                        </div>
+                    </div>
+                    <!-- Live Equity Curve -->
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-lightning-fill me-1 text-warning"></i>Account Equity</span>
+                            <button class="btn btn-outline-warning btn-action" onclick="recordEquityNow()" title="Record current MT5 equity">
+                                <i class="bi bi-camera me-1"></i>Snapshot
+                            </button>
+                        </div>
+                        <div class="card-body p-0">
                             <div id="chart-equity-live" class="chart-container" style="height:220px;"></div>
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
 
-        <!-- RIGHT: Prediction + Live Status + Trade List -->
-        <div class="col-lg-4">
+                <!-- RIGHT: Prediction + Live Status + Trade List -->
+                <div class="col-lg-4">
 
-            <!-- Live Trading Status Card -->
-            <div class="card mb-3 border-warning" id="live-status-card">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><i class="bi bi-lightning-fill me-1 text-warning"></i>Live Trading</span>
-                    <div class="d-flex gap-1">
-                        <button class="btn btn-outline-warning btn-action" onclick="runPredictNow()" title="Esegui solo prediction">
-                            <i class="bi bi-eye"></i> Predict
-                        </button>
-                        <button class="btn btn-outline-success btn-action" onclick="runExecuteNow()" title="Esegui trade pending">
-                            <i class="bi bi-send"></i> Execute
-                        </button>
-                        <button class="btn btn-outline-danger btn-action" onclick="runAllNow()" title="Prediction + Execution">
-                            <i class="bi bi-play-fill"></i> Run All
-                        </button>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div class="row g-2 small">
-                        <div class="col-6"><span class="text-muted">Next Prediction:</span></div>
-                        <div class="col-6 text-end fw-bold" id="live-next-pred">—</div>
-                        <div class="col-6"><span class="text-muted">Next Execution:</span></div>
-                        <div class="col-6 text-end fw-bold" id="live-next-exec">—</div>
-                        <div class="col-6"><span class="text-muted">Open Trades:</span></div>
-                        <div class="col-6 text-end fw-bold" id="live-open-count">0</div>
-                        <div class="col-6"><span class="text-muted">Pending Trades:</span></div>
-                        <div class="col-6 text-end fw-bold" id="live-pending-count">0</div>
-                        <div class="col-6"><span class="text-muted">Total Trades:</span></div>
-                        <div class="col-6 text-end fw-bold" id="live-total-count">0</div>
-                        <div class="col-6"><span class="text-muted">Last Signal:</span></div>
-                        <div class="col-6 text-end fw-bold" id="live-last-signal">—</div>
-                    </div>
-                    <div class="mt-2 text-danger small d-none" id="live-error-box">
-                        <i class="bi bi-exclamation-triangle me-1"></i><span id="live-error-text"></span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Live Prediction -->
-            <div class="card mb-3" id="prediction-box">
-                <div class="card-header"><i class="bi bi-robot me-1"></i>AI Prediction — Next Candle</div>
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-center mb-3">
-                        <div>
-                            <span class="stat-label">Signal</span>
-                            <div class="stat-value" id="pred-action">
-                                <span class="spinner-grow spinner-grow-sm"></span>
+                    <!-- Live Trading Status Card -->
+                    <div class="card mb-3 border-warning" id="live-status-card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-lightning-fill me-1 text-warning"></i>Live Trading</span>
+                            <div class="d-flex gap-1">
+                                <button class="btn btn-outline-warning btn-action" onclick="runPredictNow()" title="Execute prediction only">
+                                    <i class="bi bi-eye"></i> Predict
+                                </button>
+                                <button class="btn btn-outline-success btn-action" onclick="runExecuteNow()" title="Execute pending trade">
+                                    <i class="bi bi-send"></i> Execute
+                                </button>
+                                <button class="btn btn-outline-danger btn-action" onclick="runAllNow()" title="Prediction + Execution">
+                                    <i class="bi bi-play-fill"></i> Run All
+                                </button>
                             </div>
                         </div>
-                        <div class="text-end">
-                            <span class="stat-label">Confidence</span>
-                            <div class="stat-value" id="pred-conf">—</div>
-                        </div>
-                    </div>
-                    <div class="row text-center g-2">
-                        <div class="col-4">
-                            <div class="stat-label">Hold</div>
-                            <div class="fw-bold" id="pred-hold">—</div>
-                            <div class="progress" style="height:4px;">
-                                <div class="progress-bar bg-secondary" id="bar-hold" style="width:0%"></div>
+                        <div class="card-body">
+                            <div class="row g-2 small">
+                                <div class="col-6"><span class="text-muted">Next Prediction:</span></div>
+                                <div class="col-6 text-end fw-bold" id="live-next-pred">—</div>
+                                <div class="col-6"><span class="text-muted">Next Execution:</span></div>
+                                <div class="col-6 text-end fw-bold" id="live-next-exec">—</div>
+                                <div class="col-6"><span class="text-muted">Open Trades:</span></div>
+                                <div class="col-6 text-end fw-bold" id="live-open-count">0</div>
+                                <div class="col-6"><span class="text-muted">Pending Trades:</span></div>
+                                <div class="col-6 text-end fw-bold" id="live-pending-count">0</div>
+                                <div class="col-6"><span class="text-muted">Total Trades:</span></div>
+                                <div class="col-6 text-end fw-bold" id="live-total-count">0</div>
+                                <div class="col-6"><span class="text-muted">Last Signal:</span></div>
+                                <div class="col-6 text-end fw-bold" id="live-last-signal">—</div>
                             </div>
-                        </div>
-                        <div class="col-4">
-                            <div class="stat-label">Long</div>
-                            <div class="fw-bold text-success" id="pred-long">—</div>
-                            <div class="progress" style="height:4px;">
-                                <div class="progress-bar bg-success" id="bar-long" style="width:0%"></div>
-                            </div>
-                        </div>
-                        <div class="col-4">
-                            <div class="stat-label">Short</div>
-                            <div class="fw-bold text-danger" id="pred-short">—</div>
-                            <div class="progress" style="height:4px;">
-                                <div class="progress-bar bg-danger" id="bar-short" style="width:0%"></div>
+                            <div class="mt-2 text-danger small d-none" id="live-error-box">
+                                <i class="bi bi-exclamation-triangle me-1"></i><span id="live-error-text"></span>
                             </div>
                         </div>
                     </div>
-                    <div class="mt-3 text-muted small">
-                        Last price: <strong id="pred-price">—</strong> &nbsp;·&nbsp; <span id="pred-time">—</span>
-                    </div>
-                </div>
-            </div>
 
-            <!-- Params -->
-            <div class="card mb-3">
-                <div class="card-header"><i class="bi bi-gear me-1"></i>Backtest Parameters</div>
-                <div class="card-body small">
-                    <div class="row g-1">
-                        <div class="col-6"><span class="text-muted">Window:</span></div><div class="col-6 text-end fw-bold" id="p-window">—</div>
-                        <div class="col-6"><span class="text-muted">Lookahead:</span></div><div class="col-6 text-end fw-bold" id="p-lookahead">—</div>
-                        <div class="col-6"><span class="text-muted">ATR Mult:</span></div><div class="col-6 text-end fw-bold" id="p-atr">—</div>
-                        <div class="col-6"><span class="text-muted">Threshold:</span></div><div class="col-6 text-end fw-bold" id="p-thresh">—</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Trades Table with Tabs -->
-            <div class="card">
-                <div class="card-header p-0">
-                    <ul class="nav nav-tabs" role="tablist">
-                        <li class="nav-item">
-                            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-trades-bt" type="button">
-                                <i class="bi bi-clock-history me-1"></i>Backtest
-                                <span class="badge bg-secondary ms-1" id="trade-count">0</span>
-                            </button>
-                        </li>
-                        <li class="nav-item">
-                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-trades-live" type="button">
-                                <i class="bi bi-lightning-fill me-1 text-warning"></i>Live
-                                <span class="badge bg-warning text-dark ms-1" id="live-trade-count">0</span>
-                            </button>
-                        </li>
-                    </ul>
-                </div>
-                <div class="card-body p-0">
-                    <div class="tab-content">
-                        <div class="tab-pane fade show active" id="tab-trades-bt" style="max-height:380px; overflow-y:auto;">
-                            <table class="table table-dark table-striped table-hover table-trades mb-0">
-                                <thead class="sticky-top">
-                                    <tr>
-                                        <th>Data</th>
-                                        <th>Dir.</th>
-                                        <th>Entry</th>
-                                        <th>TP</th>
-                                        <th>SL</th>
-                                        <th>Return</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="trades-body">
-                                    <tr><td colspan="6" class="text-center text-muted py-3">Loading...</td></tr>
-                                </tbody>
-                            </table>
+                    <!-- Live Prediction -->
+                    <div class="card mb-3" id="prediction-box">
+                        <div class="card-header"><i class="bi bi-robot me-1"></i>AI Prediction — Next Candle</div>
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <div>
+                                    <span class="stat-label">Signal</span>
+                                    <div class="stat-value" id="pred-action">
+                                        <span class="spinner-grow spinner-grow-sm"></span>
+                                    </div>
+                                </div>
+                                <div class="text-end">
+                                    <span class="stat-label">Confidence</span>
+                                    <div class="stat-value" id="pred-conf">—</div>
+                                </div>
+                            </div>
+                            <div class="row text-center g-2">
+                                <div class="col-4">
+                                    <div class="stat-label">Hold</div>
+                                    <div class="fw-bold" id="pred-hold">—</div>
+                                    <div class="progress" style="height:4px;">
+                                        <div class="progress-bar bg-secondary" id="bar-hold" style="width:0%"></div>
+                                    </div>
+                                </div>
+                                <div class="col-4">
+                                    <div class="stat-label">Long</div>
+                                    <div class="fw-bold text-success" id="pred-long">—</div>
+                                    <div class="progress" style="height:4px;">
+                                        <div class="progress-bar bg-success" id="bar-long" style="width:0%"></div>
+                                    </div>
+                                </div>
+                                <div class="col-4">
+                                    <div class="stat-label">Short</div>
+                                    <div class="fw-bold text-danger" id="pred-short">—</div>
+                                    <div class="progress" style="height:4px;">
+                                        <div class="progress-bar bg-danger" id="bar-short" style="width:0%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mt-3 text-muted small">
+                                Last price: <strong id="pred-price">—</strong> &nbsp;·&nbsp; <span id="pred-time">—</span>
+                            </div>
                         </div>
-                        <div class="tab-pane fade" id="tab-trades-live" style="max-height:380px; overflow-y:auto;">
+                    </div>
+
+                    <!-- Live Trades -->
+                    <div class="card">
+                        <div class="card-header">
+                            <i class="bi bi-lightning-fill me-1 text-warning"></i>Live Trades
+                            <span class="badge bg-warning text-dark ms-1" id="live-trade-count">0</span>
+                        </div>
+                        <div class="card-body p-0" style="max-height:380px; overflow-y:auto;">
                             <table class="table table-dark table-striped table-hover table-trades mb-0">
                                 <thead class="sticky-top">
                                     <tr>
@@ -284,6 +206,184 @@
                 </div>
             </div>
         </div>
+
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- TAB 2: BACKTEST (secondary)                                    -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <div class="tab-pane fade" id="tab-backtest" role="tabpanel">
+
+            <!-- Backtest Parameter Form + Run Button -->
+            <div class="card mb-3">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-gear me-1"></i>Backtest Parameters</span>
+                    <button class="btn btn-sm btn-success" onclick="runBacktest()" id="btn-run-backtest">
+                        <i class="bi bi-play-fill me-1"></i>Run Backtest
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-3 col-6">
+                            <label class="form-label small text-muted">Backtest Window (days)</label>
+                            <input type="number" class="form-control form-control-sm" id="bt-backtest-window" value="365" min="30" max="3000">
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="form-label small text-muted">Predict Window (days)</label>
+                            <input type="number" class="form-control form-control-sm" id="bt-predict-window" value="30" min="5" max="365">
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="form-label small text-muted">Initial Capital ($)</label>
+                            <input type="number" class="form-control form-control-sm" id="bt-initial-capital" value="100000" min="1000" step="1000">
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="form-label small text-muted">Lookahead (candles)</label>
+                            <input type="number" class="form-control form-control-sm" id="bt-lookahead" value="10" min="1" max="60">
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="form-label small text-muted">ATR Multiplier</label>
+                            <input type="number" class="form-control form-control-sm" id="bt-atr-mult" value="1.5" min="0.1" max="10" step="0.1">
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="form-label small text-muted">Threshold</label>
+                            <input type="number" class="form-control form-control-sm" id="bt-threshold" value="0.35" min="0.01" max="1" step="0.01">
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="form-label small text-muted">Position Size</label>
+                            <input type="number" class="form-control form-control-sm" id="bt-position-size" value="0.01" min="0.001" max="1" step="0.001">
+                        </div>
+                        <div class="col-md-3 col-6">
+                            <label class="form-label small text-muted">Model Type</label>
+                            <select class="form-select form-select-sm" id="bt-model-type">
+                                <option value="lstm" selected>LSTM</option>
+                                <option value="mlp">MLP</option>
+                            </select>
+                        </div>
+                    </div>
+                    <!-- Progress indicator (shown while running) -->
+                    <div class="mt-3 d-none" id="bt-progress-box">
+                        <div class="d-flex align-items-center gap-2">
+                            <div class="spinner-border spinner-border-sm text-success" role="status"></div>
+                            <span class="small text-muted" id="bt-progress-text">Running backtest...</span>
+                        </div>
+                        <div class="progress mt-2" style="height:4px;">
+                            <div class="progress-bar bg-success progress-bar-striped progress-bar-animated" style="width:100%"></div>
+                        </div>
+                    </div>
+                    <!-- Error message -->
+                    <div class="mt-3 d-none alert alert-danger py-2 mb-0" id="bt-error-box">
+                        <i class="bi bi-exclamation-triangle me-1"></i><span id="bt-error-text"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backtest Results (hidden until run) -->
+            <div id="bt-results" class="d-none">
+
+                <!-- Stats Cards -->
+                <div class="row g-2 mb-3" id="stats-row">
+                    <div class="col-6 col-md-3 col-xl">
+                        <div class="card p-3 text-center h-100">
+                            <div class="stat-label">Final Equity</div>
+                            <div class="stat-value" id="st-equity">—</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-xl">
+                        <div class="card p-3 text-center h-100">
+                            <div class="stat-label">Total Return</div>
+                            <div class="stat-value" id="st-return">—</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-xl">
+                        <div class="card p-3 text-center h-100">
+                            <div class="stat-label">Trades</div>
+                            <div class="stat-value" id="st-trades">—</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-xl">
+                        <div class="card p-3 text-center h-100">
+                            <div class="stat-label">Hit Rate</div>
+                            <div class="stat-value" id="st-hitrate">—</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-xl">
+                        <div class="card p-3 text-center h-100">
+                            <div class="stat-label">Max Drawdown</div>
+                            <div class="stat-value" id="st-dd">—</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 col-xl">
+                        <div class="card p-3 text-center h-100">
+                            <div class="stat-label">Avg Return</div>
+                            <div class="stat-value" id="st-avgret">—</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row g-3">
+                    <!-- Backtest Candlestick Chart with Signals -->
+                    <div class="col-12">
+                        <div class="card mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-bar-chart-fill me-1"></i>Backtest — Price & Signals</span>
+                                <div>
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="setBtRange(180, event)">6M</button>
+                                    <button class="btn btn-sm btn-outline-secondary active" onclick="setBtRange(365, event)">1Y</button>
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="setBtRange(0, event)">All</button>
+                                </div>
+                            </div>
+                            <div class="card-body p-0">
+                                <div id="chart-bt-candles" class="chart-container" style="height:380px;"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- LEFT: Equity Curve -->
+                    <div class="col-lg-8">
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="bi bi-graph-up me-1"></i>Backtest Equity Curve
+                            </div>
+                            <div class="card-body p-0">
+                                <div id="chart-equity" class="chart-container" style="height:300px;"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RIGHT: Backtest Trades Table -->
+                    <div class="col-lg-4">
+                        <div class="card">
+                            <div class="card-header">
+                                <i class="bi bi-list-ul me-1"></i>Backtest Trades
+                                <span class="badge bg-secondary ms-1" id="trade-count">0</span>
+                            </div>
+                            <div class="card-body p-0" style="max-height:380px; overflow-y:auto;">
+                                <table class="table table-dark table-striped table-hover table-trades mb-0">
+                                    <thead class="sticky-top">
+                                        <tr>
+                                            <th>Data</th>
+                                            <th>Dir.</th>
+                                            <th>Entry</th>
+                                            <th>TP</th>
+                                            <th>SL</th>
+                                            <th>Return</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="trades-body">
+                                        <tr><td colspan="6" class="text-center text-muted py-3">Run a backtest to see trades</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Placeholder when no backtest has been run -->
+            <div id="bt-placeholder" class="text-center text-muted py-5">
+                <i class="bi bi-clock-history" style="font-size:3rem;"></i>
+                <p class="mt-2">Configure parameters above and click <strong>Run Backtest</strong> to see results.</p>
+            </div>
+        </div>
+
     </div>
 </div>
 
