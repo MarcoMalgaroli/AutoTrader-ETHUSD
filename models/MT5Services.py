@@ -280,7 +280,7 @@ class MT5Services:
             pos = mt5.positions_get(ticket=position)
             if pos is None or len(pos) == 0:
                 raise Exception(f"Position {position} not found")
-            pos = pos[0]
+            pos = pos[0]._asdict()
             symbol = pos['symbol'] or symbol
 
             if pos['type'] == mt5.ORDER_TYPE_BUY:
@@ -332,7 +332,7 @@ class MT5Services:
         }
         if position is not None:
             request["position"] = position
-            request["volume"] = pos.volume
+            request["volume"] = pos["volume"]
             del request["sl"]
             del request["tp"]
         return request

@@ -2,10 +2,10 @@
 Live Trader — Scheduler + Pipeline for automatic trading ETHUSD.
 
 Daily workflow:
-  23:55  ➜  Download data from MT5, feature engineering, LSTM prediction
-  00:05  ➜  If segnal is not HOLD, send order to MT5 with TP/SL (triple barrier)
+  23:55 (configurable)  -->  Download data from MT5, feature engineering, LSTM prediction
+  00:05 (configurable)  -->  If segnal is not HOLD, send order to MT5 with TP/SL (triple barrier)
 
-Everything is loggato in data/live_trades.db (SQLite) with trade_logger.
+Everything is logged in data/live_trades.db (SQLite) with trade_logger.
 """
 
 import json
@@ -19,28 +19,148 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-with open(PROJECT_ROOT / "config.json", "r") as f:
+_CONFIG_PATH = PROJECT_ROOT / "config.json"
+
+with open(_CONFIG_PATH, "r") as f:
     CONFIG = json.load(f)
 
 import machine_learning.lstm_classifier as lstm
+import machine_learning.mlp as mlp
 from dataset_utils import dataset_utils, feature_engineering
 from live_trading import trade_logger
+from config_utils import get_trading_config
 
-# ─── CONFIG ──────────────────────────────────────────────────────────────────
+# --- CONFIG ------------------------------------------------------------------
+_TR_CFG = get_trading_config(CONFIG)
 SYMBOL = CONFIG["symbol"]
 TIMEFRAME = CONFIG["live_trading"]["timeframe"]
-LOOKAHEAD = CONFIG["trading"]["lookahead"]
-ATR_MULT = CONFIG["trading"]["atr_mult"]
-THRESHOLD = CONFIG["trading"]["threshold"]
-VOLUME = CONFIG["live_trading"]["volume"]
-POSITION_SIZE = CONFIG["live_trading"]["position_size"]
-INITIAL_CAPITAL = CONFIG["trading"]["initial_capital"]
+LOOKAHEAD = _TR_CFG["lookahead"]
+ATR_MULT = _TR_CFG["atr_mult"]
+THRESHOLD = _TR_CFG["threshold"]
+VOLUME_MIN = CONFIG["live_trading"].get("volume_min", 0.01)
+VOLUME_MAX = CONFIG["live_trading"].get("volume_max", 30.0)
+MODEL_TYPE = CONFIG["live_trading"].get("model_type", "lstm")
+CONFIDENCE_THRESHOLDS = _TR_CFG.get("confidence_thresholds", {"low_max": 0.45, "avg_max": 0.55})
+POSITION_SIZES = _TR_CFG.get("position_sizes", {"low": 0.005, "avg": 0.01, "high": 0.04})
 
 # Paths
 DATASET_RAW = PROJECT_ROOT / CONFIG["paths"]["dataset_raw"] / f"{SYMBOL}_{TIMEFRAME}.csv"
 DATASET_FINAL = PROJECT_ROOT / CONFIG["paths"]["dataset_final"] / f"{SYMBOL}_{TIMEFRAME}.csv"
 
-# Stato globale condiviso (accessibile dalla dashboard)
+
+def _reload_config():
+    """Re-read config.json from disk and refresh all module-level settings.
+
+    Called at the top of every scheduled job so that config changes made
+    via the dashboard are picked up without restarting the process.
+    """
+    global CONFIG, _TR_CFG, SYMBOL, TIMEFRAME, LOOKAHEAD, ATR_MULT
+    global THRESHOLD, VOLUME_MIN, VOLUME_MAX, CONFIDENCE_THRESHOLDS, POSITION_SIZES
+    global DATASET_RAW, DATASET_FINAL, MODEL_TYPE
+
+    with open(_CONFIG_PATH, "r") as f:
+        CONFIG = json.load(f)
+
+    _TR_CFG = get_trading_config(CONFIG)
+    SYMBOL = CONFIG["symbol"]
+    TIMEFRAME = CONFIG["live_trading"]["timeframe"]
+    LOOKAHEAD = _TR_CFG["lookahead"]
+    ATR_MULT = _TR_CFG["atr_mult"]
+    THRESHOLD = _TR_CFG["threshold"]
+    VOLUME_MIN = CONFIG["live_trading"].get("volume_min", 0.01)
+    VOLUME_MAX = CONFIG["live_trading"].get("volume_max", 30.0)
+    MODEL_TYPE = CONFIG["live_trading"].get("model_type", "lstm")
+    CONFIDENCE_THRESHOLDS = _TR_CFG.get("confidence_thresholds", {"low_max": 0.45, "avg_max": 0.55})
+    POSITION_SIZES = _TR_CFG.get("position_sizes", {"low": 0.005, "avg": 0.01, "high": 0.04})
+    DATASET_RAW = PROJECT_ROOT / CONFIG["paths"]["dataset_raw"] / f"{SYMBOL}_{TIMEFRAME}.csv"
+    DATASET_FINAL = PROJECT_ROOT / CONFIG["paths"]["dataset_final"] / f"{SYMBOL}_{TIMEFRAME}.csv"
+
+
+def _get_position_size_pct(confidence: float) -> float:
+    """Return the position-size fraction (e.g. 0.01 = 1 %) for a given confidence
+    using the configurable tier thresholds (same logic as backtest)."""
+    low_max = CONFIDENCE_THRESHOLDS.get("low_max", 0.45)
+    avg_max = CONFIDENCE_THRESHOLDS.get("avg_max", 0.55)
+
+    if confidence < low_max:
+        tier, pct = "LOW", POSITION_SIZES.get("low", 0.005)
+    elif confidence < avg_max:
+        tier, pct = "AVG", POSITION_SIZES.get("avg", 0.01)
+    else:
+        tier, pct = "HIGH", POSITION_SIZES.get("high", 0.04)
+
+    log(f"Confidence {confidence:.2%} → {tier} tier → bet {pct:.2%} of equity")
+    return pct
+
+
+def calculate_volume(confidence: float, mt5_service=None) -> float:
+    """Convert a confidence-based capital percentage into an MT5 volume (lots).
+
+    Steps:
+      1. Determine bet-fraction from confidence tier.
+      2. Get account equity (MT5 if connected, else INITIAL_CAPITAL).
+      3. dollar_risk = equity × bet_fraction.
+      4. volume = dollar_risk / (price × contract_size).
+      5. Round to the symbol's volume step and clamp to [VOLUME_MIN, VOLUME_MAX].
+    """
+    pct = _get_position_size_pct(confidence)
+
+    # --- Account equity ---
+    equity = CONFIG["backtest"].get("initial_capital", 100_000)
+    if mt5_service is not None:
+        try:
+            info = mt5_service.get_account_info()
+            if info and info.get("equity"):
+                equity = info["equity"]
+        except Exception:
+            pass
+
+    dollar_risk = equity * pct
+
+    # --- Symbol info for conversion ---
+    price = 1.0
+    contract_size = 1.0
+    volume_step = 0.01
+    volume_min_sym = 0.01
+    volume_max_sym = 500.0
+
+    if mt5_service is not None:
+        try:
+            tick = mt5_service.get_last_tick(SYMBOL)
+            price = tick.get("ask", 1.0) or 1.0
+        except Exception:
+            pass
+        try:
+            sym_info = mt5_service.get_symbol_info(SYMBOL)
+            contract_size = sym_info.get("trade_contract_size", 1.0) or 1.0
+            volume_step = sym_info.get("volume_step", 0.01) or 0.01
+            volume_min_sym = sym_info.get("volume_min", 0.01) or 0.01
+            volume_max_sym = sym_info.get("volume_max", 500.0) or 500.0
+        except Exception:
+            pass
+
+    raw_volume = dollar_risk / (price * contract_size) if (price * contract_size) else 0.01
+
+    # Round to nearest volume step
+    if volume_step > 0:
+        raw_volume = round(raw_volume / volume_step) * volume_step
+
+    # Clamp: user limits (config) intersected with broker limits (symbol)
+    effective_min = max(VOLUME_MIN, volume_min_sym)
+    effective_max = min(VOLUME_MAX, volume_max_sym)
+    volume = max(effective_min, min(raw_volume, effective_max))
+
+    # Final rounding (avoid floating-point dust)
+    decimals = max(0, len(str(volume_step).rstrip('0').split('.')[-1]))
+    volume = round(volume, decimals)
+
+    log(f"Volume calc: equity=${equity:,.0f} × {pct:.2%} = ${dollar_risk:,.0f} "
+        f"→ {raw_volume:.4f} lots → clamped {volume:.2f} "
+        f"[{effective_min}–{effective_max}]")
+    return volume
+
+
+# Global shared state (accessible from the dashboard)
 state = {
     "last_prediction": None,       # {action, probs, confidence, time}
     "last_signal_time": None,
@@ -68,20 +188,21 @@ def recover_pending():
         state["pending_trade_id"] = latest["id"]
         log(f"Recovered pending trade from previous session: {latest['id']}")
 
-# ─── JOB 1: PREDICTION (23:55) ──────────────────────────────────────────────
+# --- JOB 1: PREDICTION (23:55) ----------------------------------------------
 
 def job_predict(mt5_service=None):
     """
     Executed each day at 23:55.
-    1. Download updated data from MT5 (or usa CSV se MT5 non disponibile)
+    1. Download updated data from MT5 (or use CSV if MT5 is unavailable)
     2. Feature engineering
     3. LSTM prediction
-    4. Se segnale LONG/SHORT sopra soglia → crea trade pending
+    4. If LONG/SHORT signal above threshold → create pending trade
     """
-    log("═══ JOB PREDICTION START ═══")
+    _reload_config()
+    log("=== JOB PREDICTION START ===")
 
     try:
-        # ── 1. Data download ──
+        # -- 1. Data download --
         df_raw = None
         if mt5_service is not None:
             try:
@@ -101,7 +222,7 @@ def job_predict(mt5_service=None):
             log(f"Use local dataset: {DATASET_RAW}")
             df_raw = pd.read_csv(DATASET_RAW)
 
-        # ── 2. Feature engineering ──
+        # -- 2. Feature engineering --
         log("Feature engineering...")
         path_list_final = feature_engineering.calculate_features(
             [DATASET_RAW], lookahead=LOOKAHEAD, atr_mult=ATR_MULT
@@ -109,12 +230,18 @@ def job_predict(mt5_service=None):
         df = pd.read_csv(path_list_final[0])
         df["time"] = pd.to_datetime(df["time"])
 
-        # ── 3. Train model + prediction ──
-        log("Training LSTM model...")
-        model, scaler, feature_cols = lstm.train_lstm_classifier(
-            df, lookahead_days=LOOKAHEAD, plot_results=False
-        )
-        probs = lstm.predict_next_move(model, df, feature_cols, scaler)
+        # -- 3. Train model + prediction --
+        log(f"Training {MODEL_TYPE.upper()} model...")
+        if MODEL_TYPE == "mlp":
+            model, scaler, feature_cols = mlp.train_mlp_model(
+                df, lookahead_days=LOOKAHEAD, plot_results=False
+            )
+            probs = mlp.predict_next_move(model, df, feature_cols, scaler)
+        else:
+            model, scaler, feature_cols = lstm.train_lstm_classifier(
+                df, lookahead_days=LOOKAHEAD, plot_results=False
+            )
+            probs = lstm.predict_next_move(model, df, feature_cols, scaler)
 
         # save model in state
         state["model"] = model
@@ -143,7 +270,7 @@ def job_predict(mt5_service=None):
         log(f"Prediction: {action} (conf={confidence:.2%})")
         log(f"  HOLD={probs[0]:.4f}  LONG={probs[1]:.4f}  SHORT={probs[2]:.4f}")
 
-        # ── 4. Create pending trade if above threshold ──
+        # -- 4. Create pending trade if above threshold --
         if action in ("LONG", "SHORT") and confidence >= THRESHOLD:
             trade = trade_logger.create_trade(
                 direction=action,
@@ -161,7 +288,7 @@ def job_predict(mt5_service=None):
             state["pending_trade_id"] = None
             log(f"No trade: signal={action}, conf={confidence:.2%} (threshold={THRESHOLD:.0%})")
 
-        log("═══ JOB PREDICTION END ═══\n")
+        log("=== JOB PREDICTION END ===\n")
 
     except Exception as e:
         state["last_error"] = str(e)
@@ -170,20 +297,21 @@ def job_predict(mt5_service=None):
         traceback.print_exc()
 
 
-# ─── JOB 2: EXECUTION (00:05) ───────────────────────────────────────────────
+# --- JOB 2: EXECUTION (00:05) -----------------------------------------------
 
 def job_execute(mt5_service=None):
     """
     Executed each day at 00:05.
     Take pending order and execute on MT5.
-    If MT5 is unavailable, the trade is marked as cancelled
+    If MT5 is unavailable, the trade is cancelled.
     """
-    log("═══ JOB EXECUTION START ═══")
+    _reload_config()
+    log("=== JOB EXECUTION START ===")
 
     trade_id = state.get("pending_trade_id")
     if not trade_id:
         log("No pending trade to execute.")
-        log("═══ JOB EXECUTION END ═══\n")
+        log("=== JOB EXECUTION END ===\n")
         return
 
     pending = trade_logger.get_pending_trades()
@@ -191,7 +319,7 @@ def job_execute(mt5_service=None):
     if not trade:
         log(f"Trade {trade_id} not found among pending trades.")
         state["pending_trade_id"] = None
-        log("═══ JOB EXECUTION END ═══\n")
+        log("=== JOB EXECUTION END ===\n")
         return
 
     direction = trade["direction"]
@@ -199,7 +327,7 @@ def job_execute(mt5_service=None):
     last_close = pred.get("last_close", 0)
     atr = pred.get("atr", 0)
 
-    # Calculate TP/SL con triple barrier
+    # Calculate TP/SL with triple barrier
     if direction == "LONG":
         tp = last_close + ATR_MULT * atr
         sl = last_close - ATR_MULT * atr
@@ -210,10 +338,17 @@ def job_execute(mt5_service=None):
     log(f"Trade execution {trade_id}: {direction} @ ~{last_close:.2f}")
     log(f"  TP={tp:.2f}  SL={sl:.2f}  ATR={atr:.2f}")
 
-    # ── Send to MT5 ──
+    # --- Dynamic volume based on model confidence ---
+    confidence = trade.get("confidence", 0.0)
+    volume = calculate_volume(confidence, mt5_service)
+    position_size_pct = _get_position_size_pct(confidence)
+    log(f"  Confidence={confidence:.2%}  Volume={volume:.2f} lots  "
+        f"Position%={position_size_pct:.2%}")
+
+    # -- Send to MT5 --
     if mt5_service is not None:
         try:
-            # Calculate sl_mult e tp_mult in points
+            # Calculate sl_mult and tp_mult in points
             symbol_info = mt5_service.get_symbol_info(SYMBOL)
             point = symbol_info["point"]
             tp_points = abs(tp - last_close) / point
@@ -222,7 +357,7 @@ def job_execute(mt5_service=None):
             result = mt5_service.place_order(
                 order_type="BUY" if direction == "LONG" else "SELL",
                 symbol=SYMBOL,
-                volume=VOLUME,
+                volume=volume,
                 sl_mult=sl_points,
                 tp_mult=tp_points,
                 comment=f"AI-{trade_id}",
@@ -261,38 +396,55 @@ def job_execute(mt5_service=None):
             log(f"\x1b[91mMT5 error: {e}\x1b[0m")
 
     else:
-        # Simulation without MT5 (paper trading)
-        log("\x1b[93mMT5 not connected — Paper Trading mode\x1b[0m")
-        trade_logger.mark_open(
-            trade_id=trade_id,
-            entry_price=last_close,
-            tp=tp,
-            sl=sl,
-            mt5_ticket=0,
-        )
+        # MT5 not connected — cancel the pending trade
+        log("\x1b[93mMT5 not connected — trade cancelled\x1b[0m")
+        trade_logger.mark_cancelled(trade_id, comment="MT5 not connected")
         state["pending_trade_id"] = None
-        log(f"Trade simulato aperto: entry={last_close:.2f}")
 
-    log("═══ JOB EXECUTION END ═══\n")
+    log("=== JOB EXECUTION END ===\n")
 
 
-# ─── JOB 3: CHECK OPEN POSITIONS (each hour) ─────────────────────────────────
+# --- JOB 3: CHECK OPEN POSITIONS (each hour) ---------------------------------
 
 def job_check_positions(mt5_service=None):
     """
-    Check if open trades have been closed (TP/SL raggiunto).
-    Update trade_logger accordingly.
+    Check if open trades have been closed (TP/SL reached) or if the time
+    barrier (lookahead window) has expired — in that case force-close the
+    position on MT5.
     """
+    _reload_config()
     open_trades = trade_logger.get_open_trades()
     if not open_trades:
         return
 
     log(f"Check {len(open_trades)} open trades...")
 
+    from datetime import timezone as _tz
+
     for trade in open_trades:
         ticket = trade.get("mt5_ticket", 0)
 
-        # ── Check with MT5 ──
+        # -- 1. Time barrier: close if lookahead window has expired --
+        exec_time_str = trade.get("exec_time")
+        if exec_time_str:
+            try:
+                exec_dt = datetime.fromisoformat(exec_time_str)
+                if exec_dt.tzinfo is None:
+                    exec_dt = exec_dt.replace(tzinfo=_tz.utc)
+                deadline = exec_dt + timedelta(days=LOOKAHEAD)
+                if datetime.now(_tz.utc) >= deadline:
+                    log(f"Trade {trade['id']}: TIME BARRIER hit "
+                        f"(open since {exec_time_str}, LOOKAHEAD={LOOKAHEAD}d)")
+                    if mt5_service is not None and ticket:
+                        _close_time_barrier(mt5_service, trade)
+                    else:
+                        log(f"\x1b[93mTrade {trade['id']}: time barrier hit "
+                            f"but MT5 not available — cannot force-close\x1b[0m")
+                    continue  # skip TP/SL check for this trade
+            except Exception as e:
+                log(f"\x1b[91mError evaluating time barrier for {trade['id']}: {e}\x1b[0m")
+
+        # -- 2. Check with MT5 for TP/SL hit --
         if mt5_service is not None and ticket:
             try:
                 positions = mt5_service.get_active_positions()
@@ -307,9 +459,66 @@ def job_check_positions(mt5_service=None):
             except Exception as e:
                 log(f"\x1b[91mError checking ticket {ticket}: {e}\x1b[0m")
 
-        # ── Simulation: check with data from CSV ──
-        elif ticket == 0:
-            _check_simulated_trade(trade)
+
+def _get_equity(mt5_service) -> float:
+    """Return current account equity from MT5, falling back to initial_capital."""
+    try:
+        info = mt5_service.get_account_info()
+        if info and info.get("equity"):
+            return float(info["equity"])
+    except Exception:
+        pass
+    return float(CONFIG["backtest"].get("initial_capital", 100_000))
+
+
+def _close_time_barrier(mt5_service, trade):
+    """Force-close a position whose lookahead (time barrier) has expired."""
+    from datetime import timezone as _tz
+    ticket = trade.get("mt5_ticket", 0)
+    trade_id = trade["id"]
+    direction = trade["direction"]
+    entry = trade["entry_price"] or 0.0
+
+    try:
+        mt5_service.close_position(
+            ticket, symbol=SYMBOL, comment=f"time-barrier-{trade_id}"
+        )
+
+        # Read the actual fill price and profit from history deals
+        exit_price = entry  # fallback
+        pnl = 0.0
+        try:
+            exec_time_str = trade.get("exec_time")
+            from_dt = (
+                datetime.fromisoformat(exec_time_str).replace(tzinfo=_tz.utc)
+                if exec_time_str else datetime.now(_tz.utc) - timedelta(days=30)
+            )
+            deals = mt5_service.get_history_deals(
+                from_date=from_dt,
+                to_date=datetime.now(_tz.utc),
+            )
+            if deals is not None and not deals.empty:
+                closing_deals = deals[deals["position_id"] == ticket] if ticket else pd.DataFrame()
+                if not closing_deals.empty:
+                    exit_price = float(closing_deals.iloc[-1]["price"])
+                    mt5_profit = float(closing_deals["profit"].sum())
+                    equity = _get_equity(mt5_service)
+                    pnl = mt5_profit / equity if equity else 0.0
+        except Exception as e_hist:
+            log(f"  Could not read closing deal for {trade_id}: {e_hist}")
+            # Fallback: last tick price, no PnL from MT5
+            try:
+                tick = mt5_service.get_last_tick(SYMBOL)
+                exit_price = tick.get("bid" if direction == "LONG" else "ask", entry)
+            except Exception:
+                pass
+
+        trade_logger.mark_closed(trade_id, exit_price, pnl)
+        trade_logger.update_trade(trade_id, comment="time_barrier")
+        log(f"\x1b[93mTrade {trade_id} force-closed (TIME BARRIER): "
+            f"exit={exit_price:.2f}  PnL={pnl:.4%}\x1b[0m")
+    except Exception as e:
+        log(f"\x1b[91mError force-closing trade {trade_id} (time barrier): {e}\x1b[0m")
 
 
 def _close_from_history(mt5_service, trade):
@@ -322,56 +531,22 @@ def _close_from_history(mt5_service, trade):
             to_date=datetime.now(timezone.utc),
         )
         if deals is not None and not deals.empty:
-            # Search closing deal
-            entry = trade["entry_price"]
-            direction = trade["direction"]
-            deal = deals[deals["comment"].str.contains(trade["id"], na=False)]
+            # Search closing deal by position ticket
+            ticket = trade.get("mt5_ticket")
+            deal = deals[deals["position_id"] == ticket] if ticket else pd.DataFrame()
+
             if not deal.empty:
                 exit_price = float(deal.iloc[-1]["price"])
-                if direction == "LONG":
-                    pnl = (exit_price - entry) / entry * POSITION_SIZE
-                else:
-                    pnl = (entry - exit_price) / entry * POSITION_SIZE
+                mt5_profit = float(deal["profit"].sum())
+                equity = _get_equity(mt5_service)
+                pnl = mt5_profit / equity if equity else 0.0
                 trade_logger.mark_closed(trade["id"], exit_price, pnl)
                 log(f"\x1b[92mTrade {trade['id']} closed with MT5: exit={exit_price:.2f}, PnL={pnl:.4%}\x1b[0m")
     except Exception as e:
         log(f"\x1b[91mError retrieving history: {e}\x1b[0m")
 
 
-def _check_simulated_trade(trade):
-    """
-    Simulated check: use last price from CSV to see if TP or SL hit.
-    """
-    try:
-        df = pd.read_csv(DATASET_RAW)
-        if df.empty:
-            return
-        current_price = float(df.iloc[-1]["close"])
-        entry = trade["entry_price"]
-        tp = trade["tp"]
-        sl = trade["sl"]
-        direction = trade["direction"]
-
-        hit_tp = (direction == "LONG" and current_price >= tp) or \
-                 (direction == "SHORT" and current_price <= tp)
-        hit_sl = (direction == "LONG" and current_price <= sl) or \
-                 (direction == "SHORT" and current_price >= sl)
-
-        if hit_tp or hit_sl:
-            exit_price = tp if hit_tp else sl
-            if direction == "LONG":
-                pnl = (exit_price - entry) / entry * POSITION_SIZE
-            else:
-                pnl = (entry - exit_price) / entry * POSITION_SIZE
-            trade_logger.mark_closed(trade["id"], exit_price, pnl)
-            result = "\x1b[92mTP\x1b[0m" if hit_tp else "\x1b[91mSL ❌\x1b[0m"
-            log(f"Simulated trade {trade['id']} close ({result}): PnL={pnl:.4%}")
-
-    except Exception:
-        pass
-
-
-# ─── SCHEDULER SETUP ────────────────────────────────────────────────────────
+# --- SCHEDULER SETUP --------------------------------------------------------
 
 def setup_scheduler(mt5_service=None):
     """
@@ -415,6 +590,15 @@ def setup_scheduler(mt5_service=None):
         replace_existing=True,
     )
 
+    # Job 4: Daily equity snapshot at 23:59 UTC
+    scheduler.add_job(
+        trade_logger.record_equity_snapshot,
+        CronTrigger(hour=23, minute=59),
+        id="equity_snapshot",
+        name="Daily Equity Snapshot (23:59 UTC)",
+        replace_existing=True,
+    )
+
     state["scheduler_running"] = True
     log("Scheduler setup: prediction@23:55, execution@00:05, check@xx:30")
 
@@ -442,7 +626,7 @@ def get_status() -> dict:
     }
 
 
-# ─── MANUAL TRIGGER (per testing) ───────────────────────────────────────────
+# --- MANUAL TRIGGER (for testing) -------------------------------------------
 
 def run_now(mt5_service=None):
     """Execute manual prediction + execution (test / debug)."""

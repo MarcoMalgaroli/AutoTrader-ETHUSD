@@ -15,9 +15,15 @@ import copy
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dataset_utils.feature_engineering import select_features
+from config_utils import get_model_config, get_trading_config
 
-with open(Path(__file__).resolve().parent.parent / "config.json", "r") as f:
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+
+with open(_CONFIG_PATH, "r") as f:
     CONFIG = json.load(f)
+
+_LSTM_CFG = get_model_config("lstm_classifier", CONFIG)
+_TR_CFG = get_trading_config(CONFIG)
 
 PRINT_WIDTH = CONFIG["print_width"]
 
@@ -25,21 +31,50 @@ PRINT_WIDTH = CONFIG["print_width"]
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"\n\x1b[36mUsing device: {device}\x1b[0m")
 
-def set_seed(seed=CONFIG["lstm_classifier"]["seed"]):
+def _reload_config():
+    """Re-read config.json from disk and refresh all module-level settings.
+
+    This must be called before every major entry-point so that parameter
+    changes made via the dashboard (or by editing the file) are picked up
+    without restarting the process.
+    """
+    global CONFIG, _LSTM_CFG, _TR_CFG, PRINT_WIDTH
+    global SEQ_LEN, BATCH_SIZE, EPOCHS, LEARNING_RATE
+    global HIDDEN_SIZE, NUM_LAYERS, NUM_CLASSES, DROPOUT
+
+    with open(_CONFIG_PATH, "r") as f:
+        CONFIG = json.load(f)
+
+    _LSTM_CFG = get_model_config("lstm_classifier", CONFIG)
+    _TR_CFG = get_trading_config(CONFIG)
+    PRINT_WIDTH = CONFIG["print_width"]
+
+    SEQ_LEN = _LSTM_CFG["seq_len"]
+    BATCH_SIZE = _LSTM_CFG["batch_size"]
+    EPOCHS = _LSTM_CFG["epochs"]
+    LEARNING_RATE = _LSTM_CFG["learning_rate"]
+    HIDDEN_SIZE = _LSTM_CFG["hidden_size"]
+    NUM_LAYERS = _LSTM_CFG["num_layers"]
+    NUM_CLASSES = _LSTM_CFG["num_classes"]
+    DROPOUT = _LSTM_CFG["dropout"]
+
+def set_seed(seed=None):
+    if seed is None:
+        seed = _LSTM_CFG["seed"]
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
 # ============= D1 =============
-SEQ_LEN = CONFIG["lstm_classifier"]["seq_len"]
-BATCH_SIZE = CONFIG["lstm_classifier"]["batch_size"]
-EPOCHS = CONFIG["lstm_classifier"]["epochs"]
-LEARNING_RATE = CONFIG["lstm_classifier"]["learning_rate"]
-HIDDEN_SIZE = CONFIG["lstm_classifier"]["hidden_size"]
-NUM_LAYERS = CONFIG["lstm_classifier"]["num_layers"]
-NUM_CLASSES = CONFIG["lstm_classifier"]["num_classes"]
-DROPOUT = CONFIG["lstm_classifier"]["dropout"]
+SEQ_LEN = _LSTM_CFG["seq_len"]
+BATCH_SIZE = _LSTM_CFG["batch_size"]
+EPOCHS = _LSTM_CFG["epochs"]
+LEARNING_RATE = _LSTM_CFG["learning_rate"]
+HIDDEN_SIZE = _LSTM_CFG["hidden_size"]
+NUM_LAYERS = _LSTM_CFG["num_layers"]
+NUM_CLASSES = _LSTM_CFG["num_classes"]
+DROPOUT = _LSTM_CFG["dropout"]
 
 # --- DATA PREPARATION ---
 # Note: each row contains the target of the action to perform at the opening at the next candle
@@ -52,7 +87,7 @@ def create_sequences(data, target, seq_len):
         ys.append(y)
     return np.array(xs), np.array(ys)
 
-def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: float = CONFIG["lstm_classifier"]["val_pct"]):
+def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: float = _LSTM_CFG["val_pct"]):
     """
     Prepare dataloaders for training and validation.
     Train goes from 0 to len(df)-predict_window * (1 - val_pct), Validation goes from Train end (including SEQ_LEN-1 candles for context) to end - lookahead_days.
@@ -75,7 +110,7 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
     val_df = labeled_df.iloc[split_idx - SEQ_LEN + 1:].copy()
 
     # Feature selection: auto or manual
-    fs_cfg = CONFIG["lstm_classifier"]["feature_selection"]
+    fs_cfg = _LSTM_CFG["feature_selection"]
     if fs_cfg["mode"] == "auto":
         feature_cols = select_features(train_df, corr_threshold=fs_cfg["corr_threshold"])
         print(f"  -> Auto-selected features ({len(feature_cols)}): {feature_cols}")
@@ -148,12 +183,17 @@ class CryptoLSTM(nn.Module):
 
 
 def train_lstm_classifier(df: pd.DataFrame, lookahead_days=10, plot_results=True):
+    _reload_config()
     print("\n" + " LSTM TRAINING ".center(PRINT_WIDTH, "="))
     
-    set_seed(CONFIG["lstm_classifier"]["seed"])
-    
+    set_seed(_LSTM_CFG["seed"])
+
+    print(f"\n  -> Configuration (lookahead_days={lookahead_days}):")
+    for k, v in _LSTM_CFG.items():
+        print(f"    {k}: {v}")
+
     # --- DATA PREPARATION ---
-    train_loader, val_loader, feature_cols, scaler, y_train = prepare_dataloader(df, lookahead_days=lookahead_days, val_pct=CONFIG["lstm_classifier"]["val_pct"])
+    train_loader, val_loader, feature_cols, scaler, y_train = prepare_dataloader(df, lookahead_days=lookahead_days, val_pct=_LSTM_CFG["val_pct"])
 
     # Model Initialization
     model = CryptoLSTM(len(feature_cols), HIDDEN_SIZE, NUM_LAYERS, output_size = NUM_CLASSES, dropout_prob=DROPOUT).to(device)
@@ -177,7 +217,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler=None,
 
     best_loss = float('inf')
     best_val_acc = 0.0
-    patience = CONFIG["lstm_classifier"]["early_stopping_patience"]
+    patience = _LSTM_CFG["early_stopping_patience"]
     trigger_times = 0
     best_model_wts = copy.deepcopy(model.state_dict())
 
@@ -263,6 +303,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler=None,
         plt.show()
 
 def evaluate(model, test_loader):
+    _reload_config()
     print("\n  -> Evaluating on Test Set")
     model.eval()
     all_preds = []
@@ -304,7 +345,7 @@ def evaluate(model, test_loader):
     print(f"     Avg Confidence for winner class: {np.max(probs_np, axis=1).mean():.4f}")
     print()
 
-    threshold = CONFIG["trading"]["threshold"]
+    threshold = _TR_CFG["threshold"]
     
     for class_idx, class_name in zip([1, 2], ['Long', 'Short']):
         # select only the predictions where the probability for this class is > 60%
@@ -350,6 +391,7 @@ def predict_next_move(model, df, feature_cols, scaler):
     """
     Predict the action for the next candle based on the last SEQ_LEN candles.
     """
+    _reload_config()
     model.eval()
     
     # Take last SEQ_LEN rows to create the only important sequence: the one that will be used to predict the next move
@@ -360,12 +402,12 @@ def predict_next_move(model, df, feature_cols, scaler):
     # Scale the features using the same scaler fitted on the training data
     recent_data_scaled = scaler.transform(recent_data)
     
-    # Crea il tensore (Batch=1, Seq=60, Features=...)
+    # Create the tensor (Batch=1, Seq=60, Features=...)
     input_tensor = torch.tensor(recent_data_scaled).unsqueeze(0).float().to(device)    
     
     with torch.no_grad():
         output = model(input_tensor)
         probs = torch.softmax(output, dim=1)
         
-    # Restituisce le probabilità [Hold, Long, Short]
+    # Returns the probabilities [Hold, Long, Short]
     return probs.cpu().numpy()[0]

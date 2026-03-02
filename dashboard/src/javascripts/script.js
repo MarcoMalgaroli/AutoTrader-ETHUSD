@@ -1,7 +1,12 @@
 const API = '';
 const DARK = { background: '#161b22', text: '#c9d1d9', grid: '#21262d' };
 
-/* ── helpers ─────────────────────────────────────────────────────── */
+/* -- Bootstrap tooltips init --------------------------------------- */
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => new bootstrap.Tooltip(el));
+});
+
+/* -- helpers ------------------------------------------------------- */
 function $(id) { return document.getElementById(id); }
 function fmt$(v) { return '$' + v.toLocaleString('en-US', {minimumFractionDigits: 0}); }
 function fmtPct(v, dec=2) { return (v >= 0 ? '+' : '') + v.toFixed(dec) + '%'; }
@@ -11,7 +16,7 @@ function fmtTime(iso) {
     catch { return iso; }
 }
 
-/* ── Dashboard Candlestick chart ─────────────────────────────────── */
+/* -- Dashboard Candlestick chart ----------------------------------- */
 const candleChart = LightweightCharts.createChart($('chart-candles'), {
     layout: { background: { color: DARK.background }, textColor: DARK.text },
     grid: { vertLines: { color: DARK.grid }, horzLines: { color: DARK.grid } },
@@ -27,7 +32,7 @@ const candleSeries = candleChart.addCandlestickSeries({
 const smaLine = candleChart.addLineSeries({ color: '#2196F3', lineWidth: 1, title: 'SMA 50' });
 const emaLine = candleChart.addLineSeries({ color: '#FF9800', lineWidth: 1, title: 'EMA 20' });
 
-/* ── Backtest Candlestick chart (with signal markers) — lazy init ── */
+/* -- Backtest Candlestick chart (with signal markers) — lazy init -- */
 let btCandleChart = null, btCandleSeries = null, btSmaLine = null, btEmaLine = null;
 let _btCandles = [];
 function initBtCandleChart() {
@@ -48,7 +53,7 @@ function initBtCandleChart() {
     btEmaLine = btCandleChart.addLineSeries({ color: '#FF9800', lineWidth: 1, title: 'EMA 20' });
 }
 
-/* ── Backtest equity chart — lazy init ───────────────────────────── */
+/* -- Backtest equity chart — lazy init ----------------------------- */
 let eqChart = null, eqSeries = null, eqBaseline = null;
 function initBacktestEquityChart() {
     if (eqChart) return;
@@ -65,7 +70,7 @@ function initBacktestEquityChart() {
     eqBaseline = eqChart.addLineSeries({ color: '#ef5350', lineWidth: 1, lineStyle: 2, title: 'Break Even' });
 }
 
-/* ── Live/Real equity chart — lazy init ──────────────────────────── */
+/* -- Live/Real equity chart — lazy init ---------------------------- */
 let eqLiveChart = null, eqLiveSeries = null, eqLiveBaseline = null;
 function initLiveEquityChart() {
     if (eqLiveChart) return;
@@ -84,7 +89,7 @@ function initLiveEquityChart() {
 
 let _allCandles = [];
 
-/* ── helper: fetch with error detection ──────────────────────────── */
+/* -- helper: fetch with error detection ---------------------------- */
 async function apiFetch(url, opts) {
     const r = await fetch(url, opts);
 
@@ -95,21 +100,23 @@ async function apiFetch(url, opts) {
     return r.json();
 }
 
-/* ══════════════════════════════════════════════════════════════════════
+/* ======================================================================
    DASHBOARD: Load candles, indicators, prediction, live data
-   ══════════════════════════════════════════════════════════════════════ */
+   ====================================================================== */
 async function loadDashboard() {
     try {
-        const [candles, indicators, prediction] = await Promise.all([
+        const [candles, indicators, prediction, liveSignals] = await Promise.all([
             apiFetch(API + '/api/candles?last_n=3000'),
             apiFetch(API + '/api/indicators?last_n=3000'),
             apiFetch(API + '/api/prediction'),
+            apiFetch(API + '/api/live/signals'),
         ]);
 
         _allCandles = candles;
         candleSeries.setData(candles);
         smaLine.setData(indicators.sma50);
         emaLine.setData(indicators.ema20);
+        if (liveSignals.length) candleSeries.setMarkers(liveSignals.sort((a,b) => a.time - b.time));
         setRange(365);
 
         // Prediction card
@@ -141,7 +148,7 @@ async function loadDashboard() {
     }
 }
 
-/* ── Load live trading data ──────────────────────────────────────── */
+/* -- Load live trading data ---------------------------------------- */
 async function loadLiveData() {
     try {
         const [status, liveTrades, liveEquity] = await Promise.all([
@@ -149,64 +156,73 @@ async function loadLiveData() {
             fetch(API+'/api/live/trades?last_n=20').then(r=>r.json()),
             fetch(API+'/api/live/equity').then(r=>r.json()),
         ]);
-
-        $('scheduler-dot').className = 'status-dot '+(status.scheduler_running?'online':'offline');
-        $('scheduler-label').textContent = status.scheduler_running?'Scheduler ON':'Scheduler OFF';
-        $('mt5-dot').className = 'status-dot '+(status.mt5_connected?'online':'warning');
-        $('mt5-label').textContent = status.mt5_connected?'MT5 ON':'Paper Mode';
-
-        $('live-next-pred').textContent = fmtTime(status.next_prediction);
-        $('live-next-exec').textContent = fmtTime(status.next_execution);
-        $('live-open-count').textContent = status.open_trades;
-        $('live-pending-count').textContent = status.pending_trades;
-        $('live-total-count').textContent = status.total_trades;
-
-        if (status.last_prediction) {
-            const lp = status.last_prediction;
-            const b2 = lp.action==='LONG'?'badge-long':lp.action==='SHORT'?'badge-short':'badge-hold';
-            $('live-last-signal').innerHTML = `<span class="badge ${b2}">${lp.action}</span> ${(lp.confidence*100).toFixed(0)}%`;
-        }
-
-        const errBox = $('live-error-box');
-        if (status.last_error) { errBox.classList.remove('d-none'); $('live-error-text').textContent = status.last_error; }
-        else { errBox.classList.add('d-none'); }
-
-        $('live-trade-count').textContent = liveTrades.length;
-        const lb = $('live-trades-body');
-        if (!liveTrades.length) {
-            lb.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">No live trades yet</td></tr>';
-        } else {
-            lb.innerHTML = liveTrades.map(t => {
-                const d = (t.exec_time||t.signal_time||'').split('T')[0];
-                const sb = t.status==='open'?'badge-open':t.status==='pending'?'badge-pending':t.status==='closed'?'badge-closed':'badge-cancelled';
-                const pnl = t.pnl_pct!==null?fmtPct(t.pnl_pct*100,2):'—';
-                const pc = t.pnl_pct>0?'text-success':t.pnl_pct<0?'text-danger':'';
-                return `<tr>
-                    <td class="text-nowrap">${d}</td>
-                    <td><span class="badge ${t.direction==='LONG'?'badge-long':'badge-short'}">${t.direction}</span></td>
-                    <td>${t.entry_price||'—'}</td>
-                    <td>${t.tp?t.tp+' / '+t.sl:'—'}</td>
-                    <td><span class="badge ${sb}">${t.status}</span></td>
-                    <td class="${pc} fw-bold">${pnl}</td>
-                </tr>`;
-            }).join('');
-        }
-
-        if (liveEquity.length > 0) {
-            initLiveEquityChart();
-            eqLiveSeries.setData(liveEquity);
-            if (liveEquity.length > 1) {
-                const bv = liveEquity[0].value;
-                eqLiveBaseline.setData([{time:liveEquity[0].time,value:bv},{time:liveEquity[liveEquity.length-1].time,value:bv}]);
-            }
-            eqLiveChart.timeScale().fitContent();
-        }
+        applyLiveData(status, liveTrades, liveEquity);
     } catch(e) { console.warn('Live data load error:', e); }
 }
 
-/* ══════════════════════════════════════════════════════════════════════
+/* -- Apply live data to DOM (used by both REST fetch and WebSocket) -- */
+function applyLiveData(status, liveTrades, liveEquity) {
+    $('scheduler-dot').className = 'status-dot '+(status.scheduler_running?'online':'offline');
+    $('scheduler-label').textContent = status.scheduler_running?'Scheduler ON':'Scheduler OFF';
+    $('mt5-dot').className = 'status-dot '+(status.mt5_connected?'online':'offline');
+    $('mt5-label').textContent = status.mt5_connected?'MT5 ON':'MT5 OFF';
+
+    $('live-next-pred').textContent = fmtTime(status.next_prediction);
+    $('live-next-exec').textContent = fmtTime(status.next_execution);
+    $('live-open-count').textContent = status.open_trades;
+    $('live-pending-count').textContent = status.pending_trades;
+    $('live-total-count').textContent = status.total_trades;
+
+    if (status.last_prediction) {
+        const lp = status.last_prediction;
+        const b2 = lp.action==='LONG'?'badge-long':lp.action==='SHORT'?'badge-short':'badge-hold';
+        $('live-last-signal').innerHTML = `<span class="badge ${b2}">${lp.action}</span> ${(lp.confidence*100).toFixed(0)}%`;
+    }
+
+    const errBox = $('live-error-box');
+    if (status.last_error) { errBox.classList.remove('d-none'); $('live-error-text').textContent = status.last_error; }
+    else { errBox.classList.add('d-none'); }
+
+    $('live-trade-count').textContent = liveTrades.length;
+    const lb = $('live-trades-body');
+    if (!liveTrades.length) {
+        lb.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">No live trades yet</td></tr>';
+    } else {
+        lb.innerHTML = liveTrades.map(t => {
+            const d = (t.exec_time||t.signal_time||'').split('T')[0];
+            const sb = t.status==='open'?'badge-open':t.status==='pending'?'badge-pending':t.status==='closed'?'badge-closed':'badge-cancelled';
+            const pnl = t.pnl_pct!==null?fmtPct(t.pnl_pct*100,2):'—';
+            const pc = t.pnl_pct>0?'text-success':t.pnl_pct<0?'text-danger':'';
+            const canClose = t.status==='open'||t.status==='pending';
+            const closeBtn = canClose
+                ? `<button class="btn btn-sm btn-outline-danger p-0 px-1" onclick="closePosition('${t.id||t.mt5_ticket}')" title="Close position"><i class="bi bi-trash"></i></button>`
+                : '';
+            return `<tr>
+                <td class="text-nowrap">${d}</td>
+                <td><span class="badge ${t.direction==='LONG'?'badge-long':'badge-short'}">${t.direction}</span></td>
+                <td>${t.entry_price||'—'}</td>
+                <td>${t.tp?t.tp+' / '+t.sl:'—'}</td>
+                <td><span class="badge ${sb}">${t.status}</span></td>
+                <td class="${pc} fw-bold">${pnl}</td>
+                <td>${closeBtn}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    if (liveEquity.length > 0) {
+        initLiveEquityChart();
+        eqLiveSeries.setData(liveEquity);
+        if (liveEquity.length > 1) {
+            const bv = liveEquity[0].value;
+            eqLiveBaseline.setData([{time:liveEquity[0].time,value:bv},{time:liveEquity[liveEquity.length-1].time,value:bv}]);
+        }
+        eqLiveChart.timeScale().fitContent();
+    }
+}
+
+/* ======================================================================
    BACKTEST: On-demand from the Backtest tab
-   ══════════════════════════════════════════════════════════════════════ */
+   ====================================================================== */
 
 /* Load default params into the form on startup */
 async function loadBacktestDefaults() {
@@ -218,8 +234,17 @@ async function loadBacktestDefaults() {
         $('bt-lookahead').value = d.lookahead;
         $('bt-atr-mult').value = d.atr_mult;
         $('bt-threshold').value = d.threshold;
-        $('bt-position-size').value = d.position_size;
         $('bt-model-type').value = d.model_type;
+        // Confidence tiers
+        if (d.confidence_thresholds) {
+            $('bt-conf-low-max').value = d.confidence_thresholds.low_max;
+            $('bt-conf-avg-max').value = d.confidence_thresholds.avg_max;
+        }
+        if (d.position_sizes) {
+            $('bt-ps-low').value = +(d.position_sizes.low * 100).toFixed(4);
+            $('bt-ps-avg').value = +(d.position_sizes.avg * 100).toFixed(4);
+            $('bt-ps-high').value = +(d.position_sizes.high * 100).toFixed(4);
+        }
     } catch(e) { console.warn('Could not load backtest defaults:', e); }
 }
 
@@ -237,8 +262,16 @@ async function runBacktest() {
         lookahead: parseInt($('bt-lookahead').value),
         atr_mult: parseFloat($('bt-atr-mult').value),
         threshold: parseFloat($('bt-threshold').value),
-        position_size: parseFloat($('bt-position-size').value),
         model_type: $('bt-model-type').value,
+        confidence_thresholds: {
+            low_max: parseFloat($('bt-conf-low-max').value),
+            avg_max: parseFloat($('bt-conf-avg-max').value),
+        },
+        position_sizes: {
+            low: parseFloat($('bt-ps-low').value) / 100,
+            avg: parseFloat($('bt-ps-avg').value) / 100,
+            high: parseFloat($('bt-ps-high').value) / 100,
+        },
     };
 
     // UI: show progress
@@ -331,7 +364,7 @@ async function runBacktest() {
     }
 }
 
-/* ── Action buttons ──────────────────────────────────────────────── */
+/* -- Action buttons ------------------------------------------------ */
 async function runPredictNow() {
     if (!confirm('Execute prediction now?')) return;
     try {
@@ -350,7 +383,7 @@ async function runExecuteNow() {
     } catch(e) { alert('Error: '+e); }
 }
 async function runAllNow() {
-    if (!confirm('Execute Prediction + Execution now?\n(REAL TRADE if MT5 is connected, otherwise Paper)')) return;
+    if (!confirm('Execute Prediction + Execution now?\n(Requires MT5 connection for trade execution)')) return;
     try {
         await fetch(API+'/api/live/run-now',{method:'POST'});
         alert('Prediction + Execution completed!');
@@ -364,7 +397,7 @@ async function recordEquityNow() {
     } catch(e) { alert('Error: '+e.message); }
 }
 
-/* ── Range selectors ─────────────────────────────────────────────── */
+/* -- Range selectors ----------------------------------------------- */
 function setRange(days, evt) {
     if (days === 0) { candleChart.timeScale().fitContent(); }
     else {
@@ -391,7 +424,7 @@ function setBtRange(days, evt) {
     evt && evt.target && evt.target.classList.add('active');
 }
 
-/* ── Resize ──────────────────────────────────────────────────────── */
+/* -- Resize -------------------------------------------------------- */
 function handleResize() {
     candleChart.resize($('chart-candles').clientWidth, 420);
     if (btCandleChart) btCandleChart.resize($('chart-bt-candles').clientWidth, 380);
@@ -399,6 +432,21 @@ function handleResize() {
     if (eqLiveChart) eqLiveChart.resize($('chart-equity-live').clientWidth, 220);
 }
 window.addEventListener('resize', handleResize);
+
+/* Persist active tab via URL hash (e.g. #backtest, #live-config) */
+document.querySelectorAll('#mainTabs button[data-bs-toggle="pill"]').forEach(btn => {
+    btn.addEventListener('shown.bs.tab', () => {
+        const hash = btn.dataset.bsTarget.replace('#tab-', '');
+        history.replaceState(null, '', '#' + hash);
+    });
+});
+(function restoreTab() {
+    const hash = location.hash.replace('#', '');
+    if (hash) {
+        const btn = document.getElementById('tab-' + hash + '-btn');
+        if (btn) new bootstrap.Tab(btn).show();
+    }
+})();
 
 /* Resize backtest charts when switching to Backtest tab */
 document.getElementById('tab-backtest-btn').addEventListener('shown.bs.tab', () => {
@@ -411,7 +459,7 @@ document.getElementById('tab-dashboard-btn').addEventListener('shown.bs.tab', ()
     setTimeout(handleResize, 50);
 });
 
-/* ── WebSocket for live data (replaces polling) ──────────────────── */
+/* -- WebSocket for live data (replaces polling) -------------------- */
 let _ws = null;
 let _wsRetry = null;
 
@@ -440,8 +488,214 @@ function connectLiveWS() {
     _ws.onerror = () => { if (_ws) _ws.close(); };
 }
 
-/* ── Init ──────────────────────────────────────────────────────────── */
+/* ======================================================================
+   LIVE CONFIG: Load / Save / Close Position
+   ====================================================================== */
+
+// --- Unsaved-change tracking ------------------------------------------------
+const LC_IDS = [
+    'lc-symbol','lc-lookahead','lc-timeframe','lc-threshold','lc-model-type',
+    'lc-conf-low-max','lc-conf-avg-max',
+    'lc-ps-low','lc-ps-avg','lc-ps-high',
+    'lc-volume-min','lc-volume-max',
+    'lc-pred-time','lc-exec-time','lc-check-min',
+];
+let _lcSaved = {};                       // snapshot of last-saved values
+
+function _lcSnapshot() {
+    const snap = {};
+    LC_IDS.forEach(id => { const el = $(id); if (el) snap[id] = el.value; });
+    return snap;
+}
+
+function _lcMarkDirty() {
+    LC_IDS.forEach(id => {
+        const el = $(id);
+        if (!el) return;
+        if (el.value !== (_lcSaved[id] ?? '')) el.classList.add('lc-changed');
+        else el.classList.remove('lc-changed');
+    });
+}
+
+function _lcClearDirty() {
+    LC_IDS.forEach(id => { const el = $(id); if (el) el.classList.remove('lc-changed'); });
+}
+
+// Attach listeners once DOM is ready
+LC_IDS.forEach(id => {
+    const el = $(id);
+    if (el) el.addEventListener('input', _lcMarkDirty);
+    if (el) el.addEventListener('change', _lcMarkDirty);
+});
+async function validateSymbol() {
+    const input = $('lc-symbol');
+    const feedback = $('lc-symbol-feedback');
+    const btn = $('btn-validate-symbol');
+    const symbol = input.value.trim().toUpperCase();
+
+    if (!symbol) {
+        feedback.className = 'small mt-1 text-danger';
+        feedback.textContent = 'Symbol cannot be empty.';
+        feedback.classList.remove('d-none');
+        return;
+    }
+
+    btn.disabled = true;
+    feedback.className = 'small mt-1 text-muted';
+    feedback.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Checking...';
+    feedback.classList.remove('d-none');
+
+    try {
+        const r = await apiFetch(API + '/api/live/validate-symbol', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ symbol }),
+        });
+        if (r.valid) {
+            feedback.className = 'small mt-1 text-success';
+            feedback.innerHTML = '<i class="bi bi-check-circle me-1"></i>Valid symbol in MT5.';
+            input.value = r.symbol;
+        } else {
+            feedback.className = 'small mt-1 text-danger';
+            feedback.innerHTML = '<i class="bi bi-x-circle me-1"></i>' + (r.error || 'Invalid symbol.');
+        }
+    } catch(e) {
+        feedback.className = 'small mt-1 text-danger';
+        feedback.innerHTML = '<i class="bi bi-x-circle me-1"></i>' + (e.message || 'Validation failed.');
+    } finally {
+        btn.disabled = false;
+        setTimeout(() => feedback.classList.add('d-none'), 5000);
+    }
+}
+
+async function loadLiveConfig() {
+    try {
+        const c = await apiFetch(API + '/api/live/config');
+        $('lc-symbol').value = c.symbol || '';
+        $('lc-lookahead').value = c.lookahead;
+        $('lc-timeframe').value = c.timeframe;
+        $('lc-threshold').value = c.threshold;
+        $('lc-model-type').value = c.model_type || 'lstm';
+        if (c.confidence_thresholds) {
+            $('lc-conf-low-max').value = c.confidence_thresholds.low_max;
+            $('lc-conf-avg-max').value = c.confidence_thresholds.avg_max;
+        }
+        if (c.position_sizes) {
+            $('lc-ps-low').value = +(c.position_sizes.low * 100).toFixed(4);
+            $('lc-ps-avg').value = +(c.position_sizes.avg * 100).toFixed(4);
+            $('lc-ps-high').value = +(c.position_sizes.high * 100).toFixed(4);
+        }
+        $('lc-volume-min').value = c.volume_min ?? 0.01;
+        $('lc-volume-max').value = c.volume_max ?? 30;
+        $('lc-pred-time').value = String(c.prediction_hour).padStart(2,'0')+':'+String(c.prediction_minute).padStart(2,'0');
+        $('lc-exec-time').value = String(c.execution_hour).padStart(2,'0')+':'+String(c.execution_minute).padStart(2,'0');
+        $('lc-check-min').value = c.check_positions_minute;
+        _lcSaved = _lcSnapshot();
+        _lcClearDirty();
+    } catch(e) { console.warn('Could not load live config:', e); }
+}
+
+async function saveLiveConfig() {
+    const btn = $('btn-save-live-config');
+    const banner = $('lc-save-result');
+    btn.disabled = true;
+    banner.classList.add('d-none');
+
+    const payload = {
+        symbol: $('lc-symbol').value.trim().toUpperCase(),
+        lookahead: parseInt($('lc-lookahead').value),
+        timeframe: $('lc-timeframe').value,
+        threshold: parseFloat($('lc-threshold').value),
+        model_type: $('lc-model-type').value,
+        confidence_thresholds: {
+            low_max: parseFloat($('lc-conf-low-max').value),
+            avg_max: parseFloat($('lc-conf-avg-max').value),
+        },
+        position_sizes: {
+            low: parseFloat($('lc-ps-low').value) / 100,
+            avg: parseFloat($('lc-ps-avg').value) / 100,
+            high: parseFloat($('lc-ps-high').value) / 100,
+        },
+        volume_min: parseFloat($('lc-volume-min').value),
+        volume_max: parseFloat($('lc-volume-max').value),
+        prediction_hour: parseInt($('lc-pred-time').value.split(':')[0]),
+        prediction_minute: parseInt($('lc-pred-time').value.split(':')[1]),
+        execution_hour: parseInt($('lc-exec-time').value.split(':')[0]),
+        execution_minute: parseInt($('lc-exec-time').value.split(':')[1]),
+        check_positions_minute: parseInt($('lc-check-min').value),
+    };
+
+    try {
+        const r = await apiFetch(API + '/api/live/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        banner.className = 'mt-2 alert alert-success py-2 mb-0';
+        banner.innerHTML = '<i class="bi bi-check-circle me-1"></i>' + (r.message || 'Configuration saved.');
+        banner.classList.remove('d-none');
+        _lcSaved = _lcSnapshot();
+        _lcClearDirty();
+    } catch(e) {
+        banner.className = 'mt-2 alert alert-danger py-2 mb-0';
+        banner.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + (e.message || 'Failed to save.');
+        banner.classList.remove('d-none');
+    } finally {
+        btn.disabled = false;
+        setTimeout(() => banner.classList.add('d-none'), 5000);
+    }
+}
+
+async function resetLiveConfig() {
+    if (!confirm('Reset all configuration to defaults? This will overwrite your current config.json with config.default.json.')) return;
+
+    const btn = $('btn-reset-live-config');
+    const banner = $('lc-save-result');
+    const symFeedback = $('lc-symbol-feedback');
+    btn.disabled = true;
+    banner.classList.add('d-none');
+    if (symFeedback) symFeedback.classList.add('d-none');
+
+    try {
+        const r = await apiFetch(API + '/api/live/config/reset', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+        });
+        banner.className = 'mt-2 alert alert-success py-2 mb-0';
+        banner.innerHTML = '<i class="bi bi-check-circle me-1"></i>' + (r.message || 'Configuration reset to defaults.');
+        banner.classList.remove('d-none');
+        // Reload the form with the fresh default values
+        await loadLiveConfig();
+    } catch(e) {
+        banner.className = 'mt-2 alert alert-danger py-2 mb-0';
+        banner.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + (e.message || 'Failed to reset.');
+        banner.classList.remove('d-none');
+    } finally {
+        btn.disabled = false;
+        setTimeout(() => banner.classList.add('d-none'), 5000);
+    }
+}
+
+async function closePosition(id) {
+    if (!id) { alert('No trade identifier.'); return; }
+    if (!confirm(`Close position "${id}"? This action cannot be undone.`)) return;
+
+    try {
+        const r = await apiFetch(API + '/api/live/close-position', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({identifier: id}),
+        });
+        alert(r.message || 'Position closed.');
+        loadLiveData();
+    } catch(e) {
+        alert('Error: ' + (e.message || 'Failed to close position.'));
+    }
+}
+
+/* -- Init ------------------------------------------------------------ */
 loadBacktestDefaults();
+loadLiveConfig();
 loadDashboard().then(() => {
     initLiveEquityChart();
     handleResize();

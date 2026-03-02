@@ -223,7 +223,7 @@ def calculate_features(path_list: Optional[List[Path]] = None, lookahead: int = 
 
     path_list_out = []
     for path in path_list:
-        print(f"\n---> Enhancing {path.name}")
+        print(f"\n---> Enhancing {path.name} - lookahead={lookahead}, atr_mult={atr_mult}")
         try:
             df = pd.read_csv(path, parse_dates = True)
             symbol, timeframe = path.stem.split("_", maxsplit=1)

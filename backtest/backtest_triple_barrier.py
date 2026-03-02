@@ -7,9 +7,12 @@ import torch
 import machine_learning.lstm_classifier as lstm
 import machine_learning.mlp as mlp
 from pathlib import Path
+from config_utils import get_trading_config
 
 with open(Path(__file__).resolve().parent.parent / "config.json", "r") as f:
     CONFIG = json.load(f)
+
+_TR_CFG = get_trading_config(CONFIG)
 
 PRINT_WIDTH = CONFIG["print_width"]
 
@@ -21,7 +24,7 @@ class BacktestResult:
         self.summary = summary
 
 
-def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_window: int, initial_capital: float, lookahead: int, atr_mult: float = 1.0, threshold: float = 0.34, position_size: float = 0.01, model_type: str = "lstm"):
+def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_window: int, initial_capital: float, lookahead: int, atr_mult: float = 1.0, threshold: float = 0.34, model_type: str = "lstm", confidence_thresholds: dict = None, position_sizes: dict = None, commission: float = None):
     """
     Backtest a classifier trained with Triple Barrier labels on the last `backtest_window` samples, simulating predictions for the next `predict_window` samples.
 
@@ -42,10 +45,12 @@ def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_wind
         ATR multiplier for both take profit and stop loss (default 1.0).
     threshold : float
         Minimum predicted probability required to take a trade (default 0.34).
-    position_size : float
-        Proportion of capital to risk per trade (default 0.01 for 1%).
     model_type : str
         Model to use: 'lstm' or 'mlp' (default 'lstm').
+    confidence_thresholds : dict, optional
+        {"low_max": float, "avg_max": float} boundaries between low/avg/high confidence.
+    position_sizes : dict, optional
+        {"low": float, "avg": float, "high": float} capital % per confidence tier.
     """
 
 
@@ -146,10 +151,12 @@ def backtest_triple_barrier(df: pd.DataFrame, backtest_window: int, predict_wind
         initial_capital,
         lookahead,
         atr_mult,
-        position_size=position_size
+        confidence_thresholds=confidence_thresholds,
+        position_sizes=position_sizes,
+        commission=commission,
     )
 
-def backtest_calc_equity(df: pd.DataFrame, pred_arr: np.ndarray, probs_arr: np.ndarray, initial_capital: float, lookahead: int, atr_mult: float, position_size: float):
+def backtest_calc_equity(df: pd.DataFrame, pred_arr: np.ndarray, probs_arr: np.ndarray, initial_capital: float, lookahead: int, atr_mult: float, confidence_thresholds: dict = None, position_sizes: dict = None, commission: float = None):
     """Calculate equity curve given the signals."""
     required_cols = {'open', 'high', 'low', 'close', 'ATR_14', 'target'}
     missing_cols = required_cols - set(df.columns)
@@ -277,19 +284,27 @@ def backtest_calc_equity(df: pd.DataFrame, pred_arr: np.ndarray, probs_arr: np.n
         else:
             raw_return = (entry_price - exit_price) / entry_price
 
-        net_return = raw_return - CONFIG["trading"]["commission"]  # Subtract commission
+        _commission = commission if commission is not None else CONFIG["backtest"]["commission"]
+        net_return = raw_return - _commission  # Subtract commission
         
         # Adjust position size based on confidence (probs_arr[i])
         confidence = probs_arr[i, 1] if pred_arr[i] == 1 else probs_arr[i, 2]  # LONG prob if long, SHORT prob if short
-        if confidence < 0.45:
-            adjusted_position_size = position_size * 0.5 # reduce position size for low confidence (half of base position size)
-            print(f"  \x1b[91;1m-> Low confidence ({confidence:.2%})\x1b[0m")
-        elif confidence < 0.50:
-            adjusted_position_size = position_size # base position size (1% of capital)
-            print(f"  \x1b[93;1m-> Medium confidence ({confidence:.2%})\x1b[0m")
+
+        # Use configurable confidence tiers if provided, otherwise fallback
+        _ct = confidence_thresholds or _TR_CFG.get("confidence_thresholds", {"low_max": 0.45, "avg_max": 0.55})
+        _ps = position_sizes or _TR_CFG.get("position_sizes", {"low": 0.005, "avg": 0.01, "high": 0.04})
+        low_max = _ct["low_max"]
+        avg_max = _ct["avg_max"]
+
+        if confidence < low_max:
+            adjusted_position_size = _ps["low"]
+            print(f"  \x1b[91;1m-> LOW confidence ({confidence:.2%}) — bet {_ps['low']:.2%}\x1b[0m")
+        elif confidence < avg_max:
+            adjusted_position_size = _ps["avg"]
+            print(f"  \x1b[93;1m-> MEDIUM confidence ({confidence:.2%}) — bet {_ps['avg']:.2%}\x1b[0m")
         else:
-            adjusted_position_size = position_size * 4 # increase position size for high confidence (double base position size)
-            print(f"  \x1b[92;1m-> HIGH confidence ({confidence:.2%})\x1b[0m")
+            adjusted_position_size = _ps["high"]
+            print(f"  \x1b[92;1m-> HIGH confidence ({confidence:.2%}) — bet {_ps['high']:.2%}\x1b[0m")
 
         equity_change = current_capital * net_return * adjusted_position_size
         current_capital += equity_change

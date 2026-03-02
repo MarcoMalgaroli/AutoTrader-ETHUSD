@@ -56,8 +56,7 @@ def _get_conn() -> sqlite3.Connection:
             equity      REAL NOT NULL,
             balance     REAL,
             margin      REAL,
-            free_margin REAL,
-            source      TEXT NOT NULL DEFAULT 'mt5'
+            free_margin REAL
         )
     """)
     conn.commit()
@@ -75,9 +74,57 @@ def _row_to_dict(row: tuple) -> dict:
     return d
 
 
-# ──────────────────────────────────────────────────────────────────────
+# --- MT5 live data enrichment --------------------------------------------
+_mt5_service = None
+
+def set_mt5_service(service) -> None:
+    """Set the MT5 service instance for live data enrichment.
+    Read functions will prefer MT5 live data over the DB when available."""
+    global _mt5_service
+    _mt5_service = service
+
+
+def _enrich_with_mt5(trades: List[dict]) -> List[dict]:
+    """Enrich open trades with real-time data from MT5 active positions.
+    Falls back to DB data silently if MT5 is unavailable or fails."""
+    if _mt5_service is None:
+        return trades
+    try:
+        positions_df = _mt5_service.get_active_positions()
+        if positions_df is None or positions_df.empty:
+            return trades
+        mt5_pos = {int(row["ticket"]): row for _, row in positions_df.iterrows()}
+    except Exception:
+        return trades
+
+    enriched = []
+    for t in trades:
+        t = dict(t)  # shallow copy — don't mutate original
+        ticket = t.get("mt5_ticket", 0)
+        if t["status"] == "open" and ticket and ticket in mt5_pos:
+            pos = mt5_pos[ticket]
+            t["entry_price"] = round(float(pos["price_open"]), 2)
+            if float(pos["tp"]) != 0:
+                t["tp"] = round(float(pos["tp"]), 2)
+            if float(pos["sl"]) != 0:
+                t["sl"] = round(float(pos["sl"]), 2)
+            t["current_price"] = round(float(pos["price_current"]), 2)
+            t["unrealized_pnl"] = round(float(pos["profit"]), 2)
+            # Live pnl_pct from MT5 prices
+            price_open = float(pos["price_open"])
+            price_current = float(pos["price_current"])
+            if price_open != 0:
+                if t["direction"] == "LONG":
+                    t["pnl_pct"] = round((price_current - price_open) / price_open, 6)
+                else:
+                    t["pnl_pct"] = round((price_open - price_current) / price_open, 6)
+        enriched.append(t)
+    return enriched
+
+
+# ----------------------------------------------------------------------
 # Public API
-# ──────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------
 
 def create_trade(
     direction: str,
@@ -169,7 +216,7 @@ def mark_open(
         tp=round(tp, 2),
         sl=round(sl, 2),
         mt5_ticket=mt5_ticket,
-        exec_time=exec_time or datetime.utcnow().isoformat(),
+        exec_time=exec_time or datetime.now(timezone.utc).isoformat(),
     )
 
 
@@ -185,7 +232,7 @@ def mark_closed(
         status="closed",
         exit_price=round(exit_price, 2),
         pnl_pct=round(pnl_pct, 4),
-        close_time=close_time or datetime.utcnow().isoformat(),
+        close_time=close_time or datetime.now(timezone.utc).isoformat(),
     )
 
 
@@ -195,7 +242,8 @@ def mark_cancelled(trade_id: str, comment: str = "") -> Optional[dict]:
 
 
 def get_last_n(n: int = 10) -> List[dict]:
-    """Return the last *n* trades (most recent first)."""
+    """Return the last *n* trades (most recent first).
+    Open trades are enriched with live MT5 data when available."""
     conn = _get_conn()
     try:
         cur = conn.execute(
@@ -205,11 +253,12 @@ def get_last_n(n: int = 10) -> List[dict]:
         rows = cur.fetchall()
     finally:
         conn.close()
-    return [_row_to_dict(r) for r in rows]
+    return _enrich_with_mt5([_row_to_dict(r) for r in rows])
 
 
 def get_open_trades() -> List[dict]:
-    """Return all currently open trades."""
+    """Return all currently open trades.
+    Enriched with live MT5 position data (TP/SL/current price/PnL) when available."""
     conn = _get_conn()
     try:
         cur = conn.execute(
@@ -218,7 +267,7 @@ def get_open_trades() -> List[dict]:
         rows = cur.fetchall()
     finally:
         conn.close()
-    return [_row_to_dict(r) for r in rows]
+    return _enrich_with_mt5([_row_to_dict(r) for r in rows])
 
 
 def get_pending_trades() -> List[dict]:
@@ -235,14 +284,15 @@ def get_pending_trades() -> List[dict]:
 
 
 def get_all() -> List[dict]:
-    """Return all trades."""
+    """Return all trades.
+    Open trades are enriched with live MT5 data when available."""
     conn = _get_conn()
     try:
         cur = conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM trades ORDER BY rowid")
         rows = cur.fetchall()
     finally:
         conn.close()
-    return [_row_to_dict(r) for r in rows]
+    return _enrich_with_mt5([_row_to_dict(r) for r in rows])
 
 
 def compute_equity_curve(initial_capital: float = 100_000) -> List[dict]:
@@ -279,54 +329,85 @@ def compute_equity_curve(initial_capital: float = 100_000) -> List[dict]:
     return curve
 
 
-# ──────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------
 # Equity Snapshots (daily real account equity from MT5)
-# ──────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------
 
-def record_equity_snapshot(
-    equity: float,
-    balance: Optional[float] = None,
-    margin: Optional[float] = None,
-    free_margin: Optional[float] = None,
-    date: Optional[str] = None,
-    source: str = "mt5",
-) -> None:
+def record_equity_snapshot() -> bool:
     """Record (or update) a daily equity snapshot.
-    Uses today's date by default. Upserts so only one row per date."""
-    date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    If no equity value is provided, fetches it from MT5 automatically.
+    Uses today's date by default. Upserts so only one row per date.
+    Returns True if a snapshot was recorded, False otherwise."""
+    # Auto-fetch from MT5
+    if _mt5_service is None:
+        return False
+    try:
+        info = _mt5_service.get_account_info()
+        if not info or "equity" not in info:
+            return False
+        equity = info["equity"]
+        balance = info.get("balance")
+        margin = info.get("margin")
+        free_margin = info.get("margin_free")
+    except Exception:
+        return False
+
+    date = datetime.now().strftime("%Y-%m-%d")
     with _lock:
         conn = _get_conn()
         try:
             conn.execute(
-                """INSERT INTO equity_snapshots (date, equity, balance, margin, free_margin, source)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO equity_snapshots (date, equity, balance, margin, free_margin)
+                   VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(date) DO UPDATE SET
                        equity=excluded.equity,
                        balance=excluded.balance,
                        margin=excluded.margin,
-                       free_margin=excluded.free_margin,
-                       source=excluded.source""",
+                       free_margin=excluded.free_margin""",
                 (date, round(equity, 2), balance and round(balance, 2),
-                 margin and round(margin, 2), free_margin and round(free_margin, 2), source),
+                 margin and round(margin, 2), free_margin and round(free_margin, 2)),
             )
             conn.commit()
         finally:
             conn.close()
+    return True
 
 
 def get_equity_snapshots() -> List[dict]:
-    """Return all equity snapshots ordered by date."""
+    """Return all equity snapshots ordered by date.
+    If MT5 is available and today has no snapshot yet, appends live account equity."""
     conn = _get_conn()
     try:
         cur = conn.execute(
-            "SELECT date, equity, balance, margin, free_margin, source "
+            "SELECT date, equity, balance, margin, free_margin "
             "FROM equity_snapshots ORDER BY date"
         )
         rows = cur.fetchall()
     finally:
         conn.close()
-    return [
+
+    snapshots = [
         {"date": r[0], "equity": r[1], "balance": r[2],
-         "margin": r[3], "free_margin": r[4], "source": r[5]}
+         "margin": r[3], "free_margin": r[4]}
         for r in rows
     ]
+
+    # Append today's live MT5 equity if not already snapshotted
+    if _mt5_service is not None:
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            if not any(s["date"] == today for s in snapshots):
+                info = _mt5_service.get_account_info()
+                if info and "equity" in info:
+                    snapshots.append({
+                        "date": today,
+                        "equity": round(float(info["equity"]), 2),
+                        "balance": round(float(info.get("balance", 0)), 2),
+                        "margin": round(float(info.get("margin", 0)), 2),
+                        "free_margin": round(float(info.get("margin_free", 0)), 2),
+                        "source": "mt5_live",
+                    })
+        except Exception:
+            pass
+
+    return snapshots

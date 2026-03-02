@@ -15,9 +15,15 @@ import copy
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dataset_utils.feature_engineering import select_features
+from config_utils import get_model_config, get_trading_config
 
-with open(Path(__file__).resolve().parent.parent / "config.json", "r") as f:
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+
+with open(_CONFIG_PATH, "r") as f:
     CONFIG = json.load(f)
+
+_MLP_CFG = get_model_config("mlp", CONFIG)
+_TR_CFG = get_trading_config(CONFIG)
 
 PRINT_WIDTH = CONFIG["print_width"]
 
@@ -25,23 +31,45 @@ PRINT_WIDTH = CONFIG["print_width"]
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"\n\x1b[36mUsing device: {device}\x1b[0m")
 
-def set_seed(seed=CONFIG["mlp"]["seed"]):
+def _reload_config():
+    """Re-read config.json from disk and refresh all module-level settings."""
+    global CONFIG, _MLP_CFG, _TR_CFG, PRINT_WIDTH
+    global BATCH_SIZE, EPOCHS, LEARNING_RATE
+    global HIDDEN_SIZES, NUM_CLASSES, DROPOUT
+
+    with open(_CONFIG_PATH, "r") as f:
+        CONFIG = json.load(f)
+
+    _MLP_CFG = get_model_config("mlp", CONFIG)
+    _TR_CFG = get_trading_config(CONFIG)
+    PRINT_WIDTH = CONFIG["print_width"]
+
+    BATCH_SIZE = _MLP_CFG["batch_size"]
+    EPOCHS = _MLP_CFG["epochs"]
+    LEARNING_RATE = _MLP_CFG["learning_rate"]
+    HIDDEN_SIZES = _MLP_CFG["hidden_sizes"]
+    NUM_CLASSES = _MLP_CFG["num_classes"]
+    DROPOUT = _MLP_CFG["dropout"]
+
+def set_seed(seed=None):
+    if seed is None:
+        seed = _MLP_CFG["seed"]
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
 # --- Configuration ---
-BATCH_SIZE = CONFIG["mlp"]["batch_size"]
-EPOCHS = CONFIG["mlp"]["epochs"]
-LEARNING_RATE = CONFIG["mlp"]["learning_rate"]
-HIDDEN_SIZES = CONFIG["mlp"]["hidden_sizes"]
-NUM_CLASSES = CONFIG["mlp"]["num_classes"]
-DROPOUT = CONFIG["mlp"]["dropout"]
+BATCH_SIZE = _MLP_CFG["batch_size"]
+EPOCHS = _MLP_CFG["epochs"]
+LEARNING_RATE = _MLP_CFG["learning_rate"]
+HIDDEN_SIZES = _MLP_CFG["hidden_sizes"]
+NUM_CLASSES = _MLP_CFG["num_classes"]
+DROPOUT = _MLP_CFG["dropout"]
 
 
 # --- DATA PREPARATION ---
-def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: float = CONFIG["mlp"]["val_pct"]):
+def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: float = _MLP_CFG["val_pct"]):
     """
     Prepare dataloaders for training and validation.
     Unlike the LSTM, the MLP uses individual candle feature vectors (no sequences).
@@ -59,7 +87,7 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
     val_df = labeled_df.iloc[split_idx:].copy()
 
     # Feature selection: auto or manual
-    fs_cfg = CONFIG["mlp"]["feature_selection"]
+    fs_cfg = _MLP_CFG["feature_selection"]
     if fs_cfg["mode"] == "auto":
         feature_cols = select_features(train_df, corr_threshold=fs_cfg["corr_threshold"])
         print(f"  -> Auto-selected features ({len(feature_cols)}): {feature_cols}")
@@ -136,13 +164,18 @@ class CryptoMLP(nn.Module):
 
 
 def train_mlp_model(df: pd.DataFrame, lookahead_days=10, plot_results=True):
+    _reload_config()
     print("\n" + " MLP TRAINING ".center(PRINT_WIDTH, "="))
 
-    set_seed(CONFIG["mlp"]["seed"])
+    set_seed(_MLP_CFG["seed"])
+
+    print(f"\n  -> Configuration (lookahead_days={lookahead_days}):")
+    for k, v in _MLP_CFG.items():
+        print(f"    {k}: {v}")
 
     # --- DATA PREPARATION ---
     train_loader, val_loader, feature_cols, scaler, y_train = prepare_dataloader(
-        df, lookahead_days=lookahead_days, val_pct=CONFIG["mlp"]["val_pct"]
+        df, lookahead_days=lookahead_days, val_pct=_MLP_CFG["val_pct"]
     )
 
     # Model Initialization
@@ -171,7 +204,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler=None,
 
     best_loss = float('inf')
     best_val_acc = 0.0
-    patience = CONFIG["mlp"]["early_stopping_patience"]
+    patience = _MLP_CFG["early_stopping_patience"]
     trigger_times = 0
     best_model_wts = copy.deepcopy(model.state_dict())
 
@@ -252,6 +285,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler=None,
 
 
 def evaluate(model, test_loader):
+    _reload_config()
     print("\n  -> Evaluating on Test Set")
     model.eval()
     all_preds = []
@@ -288,7 +322,7 @@ def evaluate(model, test_loader):
     print(f"     Avg Confidence for winner class: {np.max(probs_np, axis=1).mean():.4f}")
     print()
 
-    threshold = CONFIG["trading"]["threshold"]
+    threshold = _TR_CFG["threshold"]
 
     for class_idx, class_name in zip([1, 2], ['Long', 'Short']):
         high_conf_idx = np.where(probs_np[:, class_idx] > threshold)[0]
@@ -332,6 +366,7 @@ def predict_next_move(model, df, feature_cols, scaler):
     """
     Predict the action for the next candle based on the most recent candle's features.
     """
+    _reload_config()
     model.eval()
 
     recent_data = df.iloc[-1:][feature_cols].copy()
