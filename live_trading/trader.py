@@ -93,14 +93,25 @@ def _get_position_size_pct(confidence: float) -> float:
     return pct
 
 
-def calculate_volume(confidence: float, mt5_service=None) -> float:
+def _get_confidence_tier(confidence: float) -> str:
+    """Return the confidence tier label (snapshot at prediction time)."""
+    low_max = CONFIDENCE_THRESHOLDS.get("low_max", 0.45)
+    avg_max = CONFIDENCE_THRESHOLDS.get("avg_max", 0.55)
+    if confidence >= avg_max:
+        return "HIGH"
+    elif confidence >= low_max:
+        return "AVG"
+    return "LOW"
+
+
+def calculate_volume(confidence: float, direction: str, mt5_service=None) -> float:
     """Convert a confidence-based capital percentage into an MT5 volume (lots).
 
     Steps:
       1. Determine bet-fraction from confidence tier.
       2. Get account equity (MT5 if connected, else INITIAL_CAPITAL).
-      3. dollar_risk = equity × bet_fraction.
-      4. volume = dollar_risk / (price × contract_size).
+      3. dollar_risk = equity * bet_fraction.
+      4. volume = dollar_risk / (price * contract_size).
       5. Round to the symbol's volume step and clamp to [VOLUME_MIN, VOLUME_MAX].
     """
     pct = _get_position_size_pct(confidence)
@@ -127,7 +138,7 @@ def calculate_volume(confidence: float, mt5_service=None) -> float:
     if mt5_service is not None:
         try:
             tick = mt5_service.get_last_tick(SYMBOL)
-            price = tick.get("ask", 1.0) or 1.0
+            price = tick.get("ask", 1.0) if direction == "LONG" else tick.get("bid", 1.0)
         except Exception:
             pass
         try:
@@ -259,6 +270,7 @@ def job_predict(mt5_service=None):
             "long": float(probs[1]),
             "short": float(probs[2]),
             "confidence": confidence,
+            "confidence_tier": _get_confidence_tier(confidence),
             "last_close": float(df.iloc[-1]["close"]),
             "atr": float(df.iloc[-1]["ATR_14"]),
             "time": datetime.now().isoformat(),
@@ -340,7 +352,7 @@ def job_execute(mt5_service=None):
 
     # --- Dynamic volume based on model confidence ---
     confidence = trade.get("confidence", 0.0)
-    volume = calculate_volume(confidence, mt5_service)
+    volume = calculate_volume(confidence, direction, mt5_service)
     position_size_pct = _get_position_size_pct(confidence)
     log(f"  Confidence={confidence:.2%}  Volume={volume:.2f} lots  "
         f"Position%={position_size_pct:.2%}")
@@ -370,8 +382,7 @@ def job_execute(mt5_service=None):
             actual_tp, actual_sl = tp, sl
             if ticket and mt5_service is not None:
                 try:
-                    import MetaTrader5 as _mt5
-                    pos = _mt5.positions_get(ticket=ticket)
+                    pos = mt5_service.get_active_positions(ticket=ticket)
                     if pos and len(pos) > 0:
                         actual_tp = pos[0].tp
                         actual_sl = pos[0].sl
@@ -385,6 +396,7 @@ def job_execute(mt5_service=None):
                 tp=actual_tp,
                 sl=actual_sl,
                 mt5_ticket=ticket,
+                volume=volume,
             )
             state["pending_trade_id"] = None
             log(f"Order executed! Ticket={ticket}, Entry={entry:.2f}")

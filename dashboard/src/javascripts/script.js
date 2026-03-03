@@ -126,7 +126,10 @@ async function loadDashboard() {
         else if (prediction.action==='SHORT') box.classList.add('short');
         const badge = prediction.action==='LONG'?'badge-long':prediction.action==='SHORT'?'badge-short':'badge-hold';
         $('pred-action').innerHTML = `<span class="badge ${badge} fs-5">${prediction.action}</span>`;
-        $('pred-conf').textContent = (prediction.confidence*100).toFixed(1)+'%';
+        const confPct = (prediction.confidence*100).toFixed(1);
+        const tierColors = {HIGH:'#26a69a', AVG:'#f0b90b', LOW:'#ef5350'};
+        const confColor = tierColors[prediction.confidence_tier] || '#c9d1d9';
+        $('pred-conf').innerHTML = `<span style="color:${confColor};font-weight:700">${confPct}%</span>`;
         $('pred-hold').textContent = (prediction.hold*100).toFixed(1)+'%';
         $('pred-long').textContent = (prediction.long*100).toFixed(1)+'%';
         $('pred-short').textContent = (prediction.short*100).toFixed(1)+'%';
@@ -135,6 +138,14 @@ async function loadDashboard() {
         $('bar-short').style.width = (prediction.short*100)+'%';
         $('pred-price').textContent = fmt$(prediction.last_close);
         $('pred-time').textContent = prediction.last_time;
+
+        // Show model type & timeframe in prediction header and chart title
+        if (prediction.model_type || prediction.timeframe) {
+            const mt = (prediction.model_type || '—').toUpperCase();
+            const tf = prediction.timeframe || '—';
+            $('pred-model-info').textContent = `${mt} \u00b7 ${tf}`;
+            $('chart-title').textContent = `${document.title.split('\u2014')[0].trim()} \u2014 ${tf}`;
+        }
 
         $('last-update').textContent = 'Updated: ' + new Date().toLocaleString('it-IT');
         $('pipeline-error').classList.add('d-none');
@@ -161,11 +172,32 @@ async function loadLiveData() {
 }
 
 /* -- Apply live data to DOM (used by both REST fetch and WebSocket) -- */
-function applyLiveData(status, liveTrades, liveEquity) {
+function applyLiveData(status, liveTrades, liveEquity, account) {
     $('scheduler-dot').className = 'status-dot '+(status.scheduler_running?'online':'offline');
     $('scheduler-label').textContent = status.scheduler_running?'Scheduler ON':'Scheduler OFF';
     $('mt5-dot').className = 'status-dot '+(status.mt5_connected?'online':'offline');
     $('mt5-label').textContent = status.mt5_connected?'MT5 ON':'MT5 OFF';
+
+    // Update chart title & prediction card header with model/timeframe
+    if (status.model_type || status.timeframe) {
+        const tf = status.timeframe || '—';
+        const mt = (status.model_type || '—').toUpperCase();
+        $('chart-title').textContent = `${document.title.split('\u2014')[0].trim()} \u2014 ${tf}`;
+        $('pred-model-info').textContent = `${mt} \u00b7 ${tf}`;
+    }
+
+    // Live MT5 account data
+    if (account) {
+        const el = $('live-account-info');
+        if (el) {
+            el.classList.remove('d-none');
+            $('live-acct-equity').textContent = fmt$(account.equity);
+            $('live-acct-balance').textContent = fmt$(account.balance);
+            $('live-acct-profit').textContent = fmt$(account.profit);
+            const profitEl = $('live-acct-profit');
+            profitEl.className = 'col-4 fw-bold text-end' + (account.profit >= 0 ? ' text-success' : ' text-danger');
+        }
+    }
 
     $('live-next-pred').textContent = fmtTime(status.next_prediction);
     $('live-next-exec').textContent = fmtTime(status.next_execution);
@@ -176,7 +208,9 @@ function applyLiveData(status, liveTrades, liveEquity) {
     if (status.last_prediction) {
         const lp = status.last_prediction;
         const b2 = lp.action==='LONG'?'badge-long':lp.action==='SHORT'?'badge-short':'badge-hold';
-        $('live-last-signal').innerHTML = `<span class="badge ${b2}">${lp.action}</span> ${(lp.confidence*100).toFixed(0)}%`;
+        const tierColors = {HIGH:'#26a69a', AVG:'#f0b90b', LOW:'#ef5350'};
+        const confColor = tierColors[lp.confidence_tier] || '#c9d1d9';
+        $('live-last-signal').innerHTML = `<span class="badge ${b2}">${lp.action}</span> <span style="color:${confColor}">${(lp.confidence*100).toFixed(0)}%</span>`;
     }
 
     const errBox = $('live-error-box');
@@ -186,13 +220,14 @@ function applyLiveData(status, liveTrades, liveEquity) {
     $('live-trade-count').textContent = liveTrades.length;
     const lb = $('live-trades-body');
     if (!liveTrades.length) {
-        lb.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">No live trades yet</td></tr>';
+        lb.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">No live trades yet</td></tr>';
     } else {
         lb.innerHTML = liveTrades.map(t => {
             const d = (t.exec_time||t.signal_time||'').split('T')[0];
             const sb = t.status==='open'?'badge-open':t.status==='pending'?'badge-pending':t.status==='closed'?'badge-closed':'badge-cancelled';
             const pnl = t.pnl_pct!==null?fmtPct(t.pnl_pct*100,2):'—';
             const pc = t.pnl_pct>0?'text-success':t.pnl_pct<0?'text-danger':'';
+            const lots = t.volume!=null ? t.volume : '—';
             const canClose = t.status==='open'||t.status==='pending';
             const closeBtn = canClose
                 ? `<button class="btn btn-sm btn-outline-danger p-0 px-1" onclick="closePosition('${t.id||t.mt5_ticket}')" title="Close position"><i class="bi bi-trash"></i></button>`
@@ -200,6 +235,7 @@ function applyLiveData(status, liveTrades, liveEquity) {
             return `<tr>
                 <td class="text-nowrap">${d}</td>
                 <td><span class="badge ${t.direction==='LONG'?'badge-long':'badge-short'}">${t.direction}</span></td>
+                <td>${lots}</td>
                 <td>${t.entry_price||'—'}</td>
                 <td>${t.tp?t.tp+' / '+t.sl:'—'}</td>
                 <td><span class="badge ${sb}">${t.status}</span></td>
@@ -390,13 +426,6 @@ async function runAllNow() {
         loadLiveData();
     } catch(e) { alert('Error: '+e); }
 }
-async function recordEquityNow() {
-    try {
-        const r = await apiFetch(API+'/api/live/record-equity', {method:'POST'});
-        loadLiveData();
-    } catch(e) { alert('Error: '+e.message); }
-}
-
 /* -- Range selectors ----------------------------------------------- */
 function setRange(days, evt) {
     if (days === 0) { candleChart.timeScale().fitContent(); }
@@ -475,7 +504,7 @@ function connectLiveWS() {
     _ws.onmessage = (e) => {
         try {
             const d = JSON.parse(e.data);
-            applyLiveData(d.status, d.trades, d.equity);
+            applyLiveData(d.status, d.trades, d.equity, d.account);
         } catch (err) { console.warn('[WS] parse error:', err); }
     };
 

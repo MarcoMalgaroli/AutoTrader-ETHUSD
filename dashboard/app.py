@@ -9,6 +9,7 @@ import json
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 
 # Add project root to path so we can import project modules
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -45,6 +46,7 @@ DATASET_FINAL = PROJECT_ROOT / CONFIG["paths"]["dataset_final"]
 LOOKAHEAD = _TR_CFG["lookahead"]
 ATR_MULT = _TR_CFG["atr_mult"]
 MODEL_TYPE = CONFIG["live_trading"].get("model_type", "lstm")
+TIMEFRAME = CONFIG["live_trading"].get("timeframe", "D1")
 BACKTEST_WINDOW = CONFIG["backtest"]["backtest_window"]
 PREDICT_WINDOW = CONFIG["backtest"]["predict_window"]
 INITIAL_CAPITAL = CONFIG["backtest"]["initial_capital"]
@@ -72,9 +74,11 @@ _ws_clients: set = set()
 
 
 def _gather_live_data() -> dict:
-    """Collect status + trades + equity in a single payload for WS push."""
+    """Collect status + trades + equity + live MT5 account info in a single payload for WS push."""
     status = live_trader.get_status()
     status["mt5_connected"] = _mt5_service is not None
+    status["model_type"] = CONFIG["live_trading"].get("model_type", "lstm")
+    status["timeframe"] = CONFIG["live_trading"].get("timeframe", "D1")
     if _scheduler and _scheduler.running:
         status["scheduler_running"] = True
         jobs = {j.id: j for j in _scheduler.get_jobs()}
@@ -92,6 +96,26 @@ def _gather_live_data() -> dict:
         )
 
     trades = trade_logger.get_last_n(20)
+
+    # --- Live MT5 account data (fetched fresh every push) ---
+    # Also record an equity snapshot automatically so we don't need a manual trigger
+    if _mt5_service is not None:
+        trade_logger.record_equity_snapshot()
+
+    account = None
+    if _mt5_service is not None:
+        try:
+            info = _mt5_service.get_account_info()
+            if info:
+                account = {
+                    "equity": round(float(info.get("equity", 0)), 2),
+                    "balance": round(float(info.get("balance", 0)), 2),
+                    "margin": round(float(info.get("margin", 0)), 2),
+                    "free_margin": round(float(info.get("margin_free", 0)), 2),
+                    "profit": round(float(info.get("profit", 0)), 2),
+                }
+        except Exception:
+            pass
 
     snapshots = trade_logger.get_equity_snapshots()
     if snapshots:
@@ -115,7 +139,7 @@ def _gather_live_data() -> dict:
                 except Exception:
                     pass
 
-    return {"status": status, "trades": trades, "equity": equity}
+    return {"status": status, "trades": trades, "equity": equity, "account": account}
 
 
 async def _broadcast_live():
@@ -144,17 +168,13 @@ _scheduler = None
 
 # --- CACHED STATE ------------------------------------------------------------
 _cache: dict = {}
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="heavy-work")
 
 
-def _ensure_data():
-    """Load (or reload) dataset, run live prediction once, cache results.
-    Stores any error in _cache['_error'] so API routes can return it to clients.
+def _load_data(target: dict):
+    """Load dataset, run feature engineering, train model.
+    Results are stored in *target* dict (either _cache directly or a temp dict).
     """
-    if "_error" in _cache:
-        return  # already failed — don't retry automatically
-    if _cache:
-        return
-
     try:
         log("\x1b[36mLoading dataset and running pipeline...\x1b[0m")
 
@@ -178,16 +198,24 @@ def _ensure_data():
             path_list_raw, lookahead=LOOKAHEAD, atr_mult=ATR_MULT
         )
 
-        # 4. Cache final datasets
+        # 4. Cache final datasets — pick the configured timeframe
+        selected_tf = CONFIG["live_trading"].get("timeframe", "D1")
         final_path = None
         for path in path_list_final:
             tf = path.stem.split('_')[-1]
-            _cache["df_" + tf] = pd.read_csv(path)
-            if tf == "D1":
+            target["df_" + tf] = pd.read_csv(path)
+            if tf == selected_tf:
                 final_path = path
 
         if not final_path:
-            final_path = path_list_final[0]
+            # Fallback: try D1, then first available
+            for path in path_list_final:
+                if path.stem.split('_')[-1] == "D1":
+                    final_path = path
+                    break
+            if not final_path:
+                final_path = path_list_final[0]
+            log(f"\x1b[33mTimeframe {selected_tf} not found in datasets, falling back to {final_path.stem}\x1b[0m")
 
         df_full = pd.read_csv(final_path)
         df_full["time"] = pd.to_datetime(df_full["time"])
@@ -204,25 +232,50 @@ def _ensure_data():
             )
             probs = lstm.predict_next_move(model, df_full, feature_cols, scaler)
 
-        _cache["live_prediction"] = {
+        target["live_prediction"] = {
             "hold": float(probs[0]),
             "long": float(probs[1]),
             "short": float(probs[2]),
             "action": ["HOLD", "LONG", "SHORT"][int(np.argmax(probs))],
             "confidence": float(np.max(probs)),
+            "confidence_tier": live_trader._get_confidence_tier(float(np.max(probs))),
             "last_close": float(df_full.iloc[-1]["close"]),
             "last_time": str(df_full.iloc[-1]["time"]),
         }
 
-        _cache["df"] = df_full
+        target["df"] = df_full
 
         log("Ready — data loaded (backtest available on demand).")
 
     except Exception as exc:
         import traceback
         traceback.print_exc()
-        _cache["_error"] = str(exc)
+        target["_error"] = str(exc)
         log(f"\x1b[31mPipeline failed: {exc}\x1b[0m")
+
+
+def _ensure_data():
+    """Populate _cache on first call. No-op if already loaded or errored."""
+    if "_error" in _cache:
+        return
+    if _cache:
+        return
+    _load_data(_cache)
+
+
+def _refresh_cache():
+    """Reload dataset + retrain model into a fresh dict, then swap atomically.
+    Called periodically so the dashboard stays in sync with new candles.
+    Old cache remains available to readers until the swap completes."""
+    global _cache
+    log("\x1b[36mRefreshing cache...\x1b[0m")
+    new_cache = {}
+    _load_data(new_cache)
+    if "_error" not in new_cache:
+        _cache = new_cache
+        log("\x1b[32mCache refreshed successfully.\x1b[0m")
+    else:
+        log(f"\x1b[31mCache refresh failed — keeping previous data: {new_cache['_error']}\x1b[0m")
 
 
 def _check_data_ready():
@@ -250,23 +303,37 @@ async def lifespan(app: FastAPI):
     global _scheduler
     # Connect to MT5 (if available)
     _try_connect_mt5()
+    # Load data synchronously — server won't accept requests until yield anyway
     _ensure_data()
-    # Record today's equity snapshot on startup (if MT5 available)
-    trade_logger.record_equity_snapshot()
     # Startup live trading scheduler
     _scheduler = live_trader.setup_scheduler(mt5_service=_mt5_service)
+
+    # Schedule periodic cache refresh (dataset + model retrain)
+    from apscheduler.triggers.interval import IntervalTrigger
+    _cache_refresh_hours = CONFIG["dashboard"].get("cache_refresh_hours", 6)
+    _scheduler.add_job(
+        _refresh_cache,
+        IntervalTrigger(hours=_cache_refresh_hours),
+        id="cache_refresh",
+        name=f"Cache Refresh (every {_cache_refresh_hours}h)",
+        replace_existing=True,
+    )
+
     _scheduler.start()
-    log("\x1b[32mScheduler started\x1b[0m")
+    log(f"\x1b[32mScheduler started (cache refresh every {_cache_refresh_hours}h)\x1b[0m")
 
     # Start periodic WebSocket broadcast
     _broadcast_task = asyncio.create_task(_periodic_broadcast())
-    
+
+    log("\x1b[32mInitial data load complete.\x1b[0m")
+
     yield
 
     _broadcast_task.cancel()
     if _scheduler:
         _scheduler.shutdown(wait=False)
         log("\x1b[31mScheduler stopped\x1b[0m")
+    _executor.shutdown(wait=False)
     if _mt5_service:
         _mt5_service.shutdown()
         log("\x1b[31mMT5 connection closed\x1b[0m")
@@ -346,14 +413,16 @@ async def api_bt_run(
     confidence_thresholds: dict = Body(None),
     position_sizes: dict = Body(None),
 ):
-    """Run backtest on demand with user-specified parameters."""
+    """Run backtest on demand with user-specified parameters.
+    The heavy computation runs in a background thread to avoid blocking
+    WebSocket broadcasts and other HTTP requests."""
     _ensure_data()
     if err := _check_data_ready():
         return err
 
-    try:
+    def _do_backtest():
         df_full = _cache["df"]
-        res, trades = bt.backtest_triple_barrier(
+        return bt.backtest_triple_barrier(
             df_full,
             backtest_window,
             predict_window,
@@ -366,6 +435,10 @@ async def api_bt_run(
             position_sizes=position_sizes or POSITION_SIZES,
             commission=COMMISSION,
         )
+
+    try:
+        loop = asyncio.get_running_loop()
+        res, trades = await loop.run_in_executor(_executor, _do_backtest)
         _cache["backtest_result"] = res
         _cache["backtest_window"] = backtest_window
         _cache["backtest_trades"] = trades
@@ -494,7 +567,10 @@ async def api_prediction():
     _ensure_data()
     if err := _check_data_ready():
         return err
-    return _cache["live_prediction"]
+    pred = dict(_cache["live_prediction"])
+    pred["model_type"] = CONFIG["live_trading"].get("model_type", "lstm")
+    pred["timeframe"] = CONFIG["live_trading"].get("timeframe", "D1")
+    return pred
 
 @app.get("/api/live/signals")
 async def api_live_signals():
@@ -550,6 +626,8 @@ async def api_live_status():
     # Override MT5 status from actual connection (trader.state is only
     # updated when a job fires, so on fresh startup it would be False)
     status["mt5_connected"] = _mt5_service is not None
+    status["model_type"] = CONFIG["live_trading"].get("model_type", "lstm")
+    status["timeframe"] = CONFIG["live_trading"].get("timeframe", "D1")
     if _scheduler and _scheduler.running:
         status["scheduler_running"] = True
         jobs = {j.id: j for j in _scheduler.get_jobs()}
@@ -593,36 +671,29 @@ async def api_live_equity():
     return result
 
 
-@app.post("/api/live/record-equity")
-async def api_record_equity_now():
-    """Manual trigger: record current MT5 equity snapshot."""
-    if _mt5_service is None:
-        return JSONResponse(status_code=503, content={"error": "MT5 not connected"})
-    trade_logger.record_equity_snapshot()
-    await _broadcast_live()
-    return {"status": "ok"}
-
-
 @app.post("/api/live/run-now")
 async def api_live_run_now():
-    """Manual trigger: execute prediction + immediate execution."""
-    live_trader.run_now(mt5_service=_mt5_service)
+    """Manual trigger: execute prediction + immediate execution (in background thread)."""
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_executor, lambda: live_trader.run_now(mt5_service=_mt5_service))
     await _broadcast_live()
     return {"status": "ok", "message": "Prediction + Execution completed"}
 
 
 @app.post("/api/live/predict-now")
 async def api_live_predict_now():
-    """Manual trigger: execute solo prediction."""
-    live_trader.job_predict(mt5_service=_mt5_service)
+    """Manual trigger: execute solo prediction (in background thread)."""
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_executor, lambda: live_trader.job_predict(mt5_service=_mt5_service))
     await _broadcast_live()
     return {"status": "ok", "prediction": live_trader.state.get("last_prediction")}
 
 
 @app.post("/api/live/execute-now")
 async def api_live_execute_now():
-    """Manual trigger: execute the pending trade."""
-    live_trader.job_execute(mt5_service=_mt5_service)
+    """Manual trigger: execute the pending trade (in background thread)."""
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_executor, lambda: live_trader.job_execute(mt5_service=_mt5_service))
     await _broadcast_live()
     return {"status": "ok", "pending": live_trader.state.get("pending_trade_id")}
 
@@ -687,6 +758,7 @@ async def api_live_config_save(
     """Save live trading config to config.json and reschedule jobs."""
     global SYMBOL, LOOKAHEAD, ATR_MULT, THRESHOLD, CONFIDENCE_THRESHOLDS, POSITION_SIZES
     global BACKTEST_WINDOW, PREDICT_WINDOW, INITIAL_CAPITAL, COMMISSION, _mt5_service
+    global MODEL_TYPE, TIMEFRAME
 
     symbol = symbol.strip().upper()
 
@@ -715,6 +787,8 @@ async def api_live_config_save(
     CONFIG["live_trading"]["model_type"] = model_type
     CONFIG["trading"]["lookahead"] = lookahead
     LOOKAHEAD = lookahead
+    MODEL_TYPE = model_type
+    TIMEFRAME = timeframe
     live_trader.LOOKAHEAD = lookahead
     _la_key = f"trading_{LOOKAHEAD}"
     if _la_key not in CONFIG:
@@ -777,8 +851,13 @@ async def api_live_config_save(
         except Exception as e:
             log(f"\x1b[31mFailed to reschedule: {e}\x1b[0m")
 
+    # Reload data in background — symbol / timeframe / lookahead may have changed
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(_executor, _refresh_cache)
+    log("\x1b[36mCache refresh queued after config change.\x1b[0m")
+
     await _broadcast_live()
-    return {"status": "ok", "message": "Configuration saved and scheduler updated."}
+    return {"status": "ok", "message": "Configuration saved and scheduler updated. Data reload started."}
 
 
 @app.post("/api/live/config/reset")
@@ -786,7 +865,7 @@ async def api_live_config_reset():
     """Reset config.json to config.default.json and reload in-memory state."""
     global CONFIG, _TR_CFG, SYMBOL, THRESHOLD, CONFIDENCE_THRESHOLDS, POSITION_SIZES
     global LOOKAHEAD, ATR_MULT, INITIAL_CAPITAL, COMMISSION
-    global BACKTEST_WINDOW, PREDICT_WINDOW, _mt5_service
+    global BACKTEST_WINDOW, PREDICT_WINDOW, _mt5_service, MODEL_TYPE, TIMEFRAME
     try:
         CONFIG.update(reset_to_defaults())
         _TR_CFG = get_trading_config(CONFIG)
@@ -814,6 +893,8 @@ async def api_live_config_reset():
         THRESHOLD = _TR_CFG["threshold"]
         CONFIDENCE_THRESHOLDS = _TR_CFG.get("confidence_thresholds", {"low_max": 0.45, "avg_max": 0.55})
         POSITION_SIZES = _TR_CFG.get("position_sizes", {"low": 0.005, "avg": 0.01, "high": 0.04})
+        MODEL_TYPE = CONFIG["live_trading"].get("model_type", "lstm")
+        TIMEFRAME = CONFIG["live_trading"].get("timeframe", "D1")
         live_trader.THRESHOLD = THRESHOLD
         live_trader.TIMEFRAME = CONFIG["live_trading"]["timeframe"]
         live_trader.VOLUME_MIN = CONFIG["live_trading"].get("volume_min", 0.01)
@@ -823,8 +904,14 @@ async def api_live_config_reset():
         log("Config reset to defaults.")
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to reset config: {e}"})
+
+    # Reload data in background — defaults may differ from current config
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(_executor, _refresh_cache)
+    log("\x1b[36mCache refresh queued after config reset.\x1b[0m")
+
     await _broadcast_live()
-    return {"status": "ok", "message": "Configuration reset to defaults."}
+    return {"status": "ok", "message": "Configuration reset to defaults. Data reload started."}
 
 
 @app.get("/api/live/config/defaults")

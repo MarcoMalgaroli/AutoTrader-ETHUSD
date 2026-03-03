@@ -22,7 +22,7 @@ _lock = Lock()
 _COLUMNS = [
     "id", "direction", "signal_time", "exec_time", "entry_price",
     "tp", "sl", "exit_price", "pnl_pct", "status", "mt5_ticket",
-    "confidence", "probs", "close_time", "comment",
+    "confidence", "probs", "close_time", "comment", "volume",
 ]
 
 
@@ -38,6 +38,7 @@ def _get_conn() -> sqlite3.Connection:
             signal_time TEXT,
             exec_time   TEXT,
             entry_price REAL,
+            volume      REAL,
             tp          REAL,
             sl          REAL,
             exit_price  REAL,
@@ -110,6 +111,8 @@ def _enrich_with_mt5(trades: List[dict]) -> List[dict]:
                 t["sl"] = round(float(pos["sl"]), 2)
             t["current_price"] = round(float(pos["price_current"]), 2)
             t["unrealized_pnl"] = round(float(pos["profit"]), 2)
+            if "volume" in pos.index:
+                t["volume"] = round(float(pos["volume"]), 2)
             # Live pnl_pct from MT5 prices
             price_open = float(pos["price_open"])
             price_current = float(pos["price_current"])
@@ -139,6 +142,7 @@ def create_trade(
         "signal_time": signal_time,
         "exec_time": None,
         "entry_price": None,
+        "volume": None,
         "tp": None,
         "sl": None,
         "exit_price": None,
@@ -155,13 +159,13 @@ def create_trade(
         try:
             conn.execute(
                 """INSERT INTO trades
-                   (id, direction, signal_time, exec_time, entry_price, tp, sl,
+                   (id, direction, signal_time, exec_time, entry_price, volume, tp, sl,
                     exit_price, pnl_pct, status, mt5_ticket, confidence, probs,
                     close_time, comment)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     trade["id"], trade["direction"], trade["signal_time"],
-                    trade["exec_time"], trade["entry_price"], trade["tp"],
+                    trade["exec_time"], trade["entry_price"], trade["volume"], trade["tp"],
                     trade["sl"], trade["exit_price"], trade["pnl_pct"],
                     trade["status"], trade["mt5_ticket"], trade["confidence"],
                     json.dumps(trade["probs"], default=str),
@@ -207,10 +211,10 @@ def mark_open(
     sl: float,
     mt5_ticket: int,
     exec_time: Optional[str] = None,
+    volume: Optional[float] = None,
 ) -> Optional[dict]:
     """Mark a trade as open after execution on MT5."""
-    return update_trade(
-        trade_id,
+    kwargs = dict(
         status="open",
         entry_price=round(entry_price, 2),
         tp=round(tp, 2),
@@ -218,6 +222,9 @@ def mark_open(
         mt5_ticket=mt5_ticket,
         exec_time=exec_time or datetime.now(timezone.utc).isoformat(),
     )
+    if volume is not None:
+        kwargs["volume"] = round(volume, 2)
+    return update_trade(trade_id, **kwargs)
 
 
 def mark_closed(
@@ -405,7 +412,6 @@ def get_equity_snapshots() -> List[dict]:
                         "balance": round(float(info.get("balance", 0)), 2),
                         "margin": round(float(info.get("margin", 0)), 2),
                         "free_margin": round(float(info.get("margin_free", 0)), 2),
-                        "source": "mt5_live",
                     })
         except Exception:
             pass

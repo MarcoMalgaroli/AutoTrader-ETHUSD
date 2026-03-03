@@ -48,7 +48,7 @@
     </div>
 </nav>
 
-<div class="container-fluid px-3 pb-3">
+<div class="container-fluid p-3">
 
     <!-- --- PIPELINE ERROR BANNER -------------------------------------- -->
     <div class="alert alert-danger d-none d-flex align-items-center mb-3" role="alert" id="pipeline-error">
@@ -73,7 +73,7 @@
                     <!-- Candlestick -->
                     <div class="card mb-3">
                         <div class="card-header d-flex justify-content-between align-items-center">
-                            <span><i class="bi bi-bar-chart-fill me-1"></i>{{ symbol }} — Daily</span>
+                            <span><i class="bi bi-bar-chart-fill me-1"></i><span id="chart-title">{{ symbol }}</span></span>
                             <div>
                                 <button class="btn btn-sm btn-outline-secondary" onclick="setRange(30, event)">1M</button>
                                 <button class="btn btn-sm btn-outline-secondary" onclick="setRange(180, event)">6M</button>
@@ -89,9 +89,6 @@
                     <div class="card">
                         <div class="card-header d-flex justify-content-between align-items-center">
                             <span><i class="bi bi-lightning-fill me-1 text-warning"></i>Account Equity</span>
-                            <button class="btn btn-outline-warning btn-action" onclick="recordEquityNow()" title="Record current MT5 equity">
-                                <i class="bi bi-camera me-1"></i>Snapshot
-                            </button>
                         </div>
                         <div class="card-body p-0">
                             <div id="chart-equity-live" class="chart-container" style="height:220px;"></div>
@@ -133,6 +130,17 @@
                                 <div class="col-6"><span class="text-muted">Last Signal:</span></div>
                                 <div class="col-6 text-end fw-bold" id="live-last-signal">—</div>
                             </div>
+                            <!-- Live MT5 Account Info (shown when connected) -->
+                            <div class="d-none mt-2 pt-2 border-top border-secondary" id="live-account-info">
+                                <div class="row g-2 small">
+                                    <div class="col-4 text-muted">Equity</div>
+                                    <div class="col-4 text-muted text-center">Balance</div>
+                                    <div class="col-4 text-muted text-end">Profit</div>
+                                    <div class="col-4 fw-bold" id="live-acct-equity">—</div>
+                                    <div class="col-4 fw-bold text-center" id="live-acct-balance">—</div>
+                                    <div class="col-4 fw-bold text-end" id="live-acct-profit">—</div>
+                                </div>
+                            </div>
                             <div class="mt-2 text-danger small d-none" id="live-error-box">
                                 <i class="bi bi-exclamation-triangle me-1"></i><span id="live-error-text"></span>
                             </div>
@@ -141,7 +149,7 @@
 
                     <!-- Live Prediction -->
                     <div class="card mb-3" id="prediction-box">
-                        <div class="card-header"><i class="bi bi-robot me-1"></i>AI Prediction — Next Candle</div>
+                        <div class="card-header"><i class="bi bi-robot me-1"></i>AI Prediction — <span id="pred-model-info">Next Candle</span></div>
                         <div class="card-body">
                             <div class="d-flex justify-content-between align-items-center mb-3">
                                 <div>
@@ -196,6 +204,7 @@
                                     <tr>
                                         <th>Data</th>
                                         <th>Dir.</th>
+                                        <th>Lots</th>
                                         <th>Entry</th>
                                         <th>TP / SL</th>
                                         <th>Status</th>
@@ -204,7 +213,7 @@
                                     </tr>
                                 </thead>
                                 <tbody id="live-trades-body">
-                                    <tr><td colspan="7" class="text-center text-muted py-3">No live trades</td></tr>
+                                    <tr><td colspan="8" class="text-center text-muted py-3">No live trades</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -452,7 +461,7 @@
                                     <div class="d-none small mt-1" id="lc-symbol-feedback"></div>
                                 </div>
                                 <div class="col-md-4">
-                                    <label for="lc-timeframe" class="form-label small text-muted">Timeframe<span class="help-hint" data-bs-toggle="tooltip" data-bs-placement="top" title="Candle timeframe used for data download and feature engineering.">?</span></label>
+                                    <label for="lc-timeframe" class="form-label small text-muted">Timeframe<span class="help-hint" data-bs-toggle="tooltip" data-bs-placement="top" title="Candle timeframe used for data download, feature engineering and predictions.">?</span></label>
                                     <select class="form-select form-select-sm" id="lc-timeframe">
                                         <option value="H1">H1</option>
                                         <option value="H4">H4</option>
