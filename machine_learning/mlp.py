@@ -118,7 +118,7 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
     print(f"  -> Shape Input Val: {X_val_scaled.shape}")
     print(f"  -> Shape Target Val: {y_val.shape}")
 
-    # Conversion to PyTorch Tensors (no sequences — each sample is a flat feature vector)
+    # Conversion to PyTorch Tensors (no sequences - each sample is a flat feature vector)
     train_data = TensorDataset(
         torch.from_numpy(X_train_scaled).float(),
         torch.from_numpy(y_train.copy()).long()
@@ -279,7 +279,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler=None,
         plt.plot(val_losses, label='Validation Loss', linestyle='--')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
-        plt.title('MLP — Training Loss Over Epochs')
+        plt.title('MLP - Training Loss Over Epochs')
         plt.legend()
         plt.show()
 

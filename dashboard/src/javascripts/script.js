@@ -1,6 +1,19 @@
 const API = '';
 const DARK = { background: '#161b22', text: '#c9d1d9', grid: '#21262d' };
 
+/* -- Data‑loading state -------------------------------------------- */
+let _dataLoading = true;    // assume loading until first successful fetch
+
+function showCandleLoader(msg) {
+    const el = $('loader-candles');
+    if (el) { el.classList.remove('d-none'); }
+    if (msg) { const t = $('loader-candles-text'); if (t) t.textContent = msg; }
+}
+function hideCandleLoader() {
+    const el = $('loader-candles');
+    if (el) el.classList.add('d-none');
+}
+
 /* -- Bootstrap tooltips init --------------------------------------- */
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => new bootstrap.Tooltip(el));
@@ -11,7 +24,7 @@ function $(id) { return document.getElementById(id); }
 function fmt$(v) { return '$' + v.toLocaleString('en-US', {minimumFractionDigits: 0}); }
 function fmtPct(v, dec=2) { return (v >= 0 ? '+' : '') + v.toFixed(dec) + '%'; }
 function fmtTime(iso) {
-    if (!iso) return '—';
+    if (!iso) return '-';
     try { return new Date(iso).toLocaleString('it-IT', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
     catch { return iso; }
 }
@@ -32,7 +45,7 @@ const candleSeries = candleChart.addCandlestickSeries({
 const smaLine = candleChart.addLineSeries({ color: '#2196F3', lineWidth: 1, title: 'SMA 50' });
 const emaLine = candleChart.addLineSeries({ color: '#FF9800', lineWidth: 1, title: 'EMA 20' });
 
-/* -- Backtest Candlestick chart (with signal markers) — lazy init -- */
+/* -- Backtest Candlestick chart (with signal markers) - lazy init -- */
 let btCandleChart = null, btCandleSeries = null, btSmaLine = null, btEmaLine = null;
 let _btCandles = [];
 function initBtCandleChart() {
@@ -53,7 +66,7 @@ function initBtCandleChart() {
     btEmaLine = btCandleChart.addLineSeries({ color: '#FF9800', lineWidth: 1, title: 'EMA 20' });
 }
 
-/* -- Backtest equity chart — lazy init ----------------------------- */
+/* -- Backtest equity chart - lazy init ----------------------------- */
 let eqChart = null, eqSeries = null, eqBaseline = null;
 function initBacktestEquityChart() {
     if (eqChart) return;
@@ -70,7 +83,7 @@ function initBacktestEquityChart() {
     eqBaseline = eqChart.addLineSeries({ color: '#ef5350', lineWidth: 1, lineStyle: 2, title: 'Break Even' });
 }
 
-/* -- Live/Real equity chart — lazy init ---------------------------- */
+/* -- Live/Real equity chart - lazy init ---------------------------- */
 let eqLiveChart = null, eqLiveSeries = null, eqLiveBaseline = null;
 function initLiveEquityChart() {
     if (eqLiveChart) return;
@@ -105,12 +118,18 @@ async function apiFetch(url, opts) {
    ====================================================================== */
 async function loadDashboard() {
     try {
-        const [candles, indicators, prediction, liveSignals] = await Promise.all([
+        let resp;
+        try { resp = await Promise.all([
             apiFetch(API + '/api/candles?last_n=3000'),
             apiFetch(API + '/api/indicators?last_n=3000'),
             apiFetch(API + '/api/prediction'),
             apiFetch(API + '/api/live/signals'),
-        ]);
+        ]); } catch (e) {
+            // Data not ready yet (503) - keep loader visible, retry via WS
+            if (_dataLoading) { showCandleLoader('Waiting for data pipeline…'); return; }
+            throw e;
+        }
+        const [candles, indicators, prediction, liveSignals] = resp;
 
         _allCandles = candles;
         candleSeries.setData(candles);
@@ -141,20 +160,24 @@ async function loadDashboard() {
 
         // Show model type & timeframe in prediction header and chart title
         if (prediction.model_type || prediction.timeframe) {
-            const mt = (prediction.model_type || '—').toUpperCase();
-            const tf = prediction.timeframe || '—';
-            $('pred-model-info').textContent = `${mt} \u00b7 ${tf}`;
-            $('chart-title').textContent = `${document.title.split('\u2014')[0].trim()} \u2014 ${tf}`;
+            const mt = (prediction.model_type || '-').toUpperCase();
+            const tf = prediction.timeframe || '-';
+            const sym = $('nav-symbol') ? $('nav-symbol').textContent : '';
+            $('pred-model-info').textContent = `${mt} - ${tf}`;
+            $('chart-title').textContent = `${sym} - ${tf}`;
         }
 
         $('last-update').textContent = 'Updated: ' + new Date().toLocaleString('it-IT');
         $('pipeline-error').classList.add('d-none');
+        _dataLoading = false;
+        hideCandleLoader();
 
         loadLiveData();
     } catch (e) {
         console.error('Pipeline load error:', e);
         $('pipeline-error').classList.remove('d-none');
         $('pipeline-error-text').textContent = e.message || 'Unknown error';
+        hideCandleLoader();
         loadLiveData();
     }
 }
@@ -180,10 +203,11 @@ function applyLiveData(status, liveTrades, liveEquity, account) {
 
     // Update chart title & prediction card header with model/timeframe
     if (status.model_type || status.timeframe) {
-        const tf = status.timeframe || '—';
-        const mt = (status.model_type || '—').toUpperCase();
-        $('chart-title').textContent = `${document.title.split('\u2014')[0].trim()} \u2014 ${tf}`;
-        $('pred-model-info').textContent = `${mt} \u00b7 ${tf}`;
+        const tf = status.timeframe || '-';
+        const mt = (status.model_type || '-').toUpperCase();
+        const sym = $('nav-symbol') ? $('nav-symbol').textContent : '';
+        $('chart-title').textContent = `${sym} - ${tf}`;
+        $('pred-model-info').textContent = `${mt} - ${tf}`;
     }
 
     // Live MT5 account data
@@ -225,9 +249,9 @@ function applyLiveData(status, liveTrades, liveEquity, account) {
         lb.innerHTML = liveTrades.map(t => {
             const d = (t.exec_time||t.signal_time||'').split('T')[0];
             const sb = t.status==='open'?'badge-open':t.status==='pending'?'badge-pending':t.status==='closed'?'badge-closed':'badge-cancelled';
-            const pnl = t.pnl_pct!==null?fmtPct(t.pnl_pct*100,2):'—';
+            const pnl = t.pnl_pct!==null?fmtPct(t.pnl_pct*100,2):'-';
             const pc = t.pnl_pct>0?'text-success':t.pnl_pct<0?'text-danger':'';
-            const lots = t.volume!=null ? t.volume : '—';
+            const lots = t.volume!=null ? t.volume : '-';
             const canClose = t.status==='open'||t.status==='pending';
             const closeBtn = canClose
                 ? `<button class="btn btn-sm btn-outline-danger p-0 px-1" onclick="closePosition('${t.id||t.mt5_ticket}')" title="Close position"><i class="bi bi-trash"></i></button>`
@@ -236,8 +260,8 @@ function applyLiveData(status, liveTrades, liveEquity, account) {
                 <td class="text-nowrap">${d}</td>
                 <td><span class="badge ${t.direction==='LONG'?'badge-long':'badge-short'}">${t.direction}</span></td>
                 <td>${lots}</td>
-                <td>${t.entry_price||'—'}</td>
-                <td>${t.tp?t.tp+' / '+t.sl:'—'}</td>
+                <td>${t.entry_price||'-'}</td>
+                <td>${t.tp?t.tp+' / '+t.sl:'-'}</td>
                 <td><span class="badge ${sb}">${t.status}</span></td>
                 <td class="${pc} fw-bold">${pnl}</td>
                 <td>${closeBtn}</td>
@@ -400,6 +424,24 @@ async function runBacktest() {
     }
 }
 
+/* Export backtest signals as JSON for MT5 EA */
+async function exportSignalsMT5() {
+    try {
+        const data = await apiFetch(API + '/api/bt/export_signals');
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `signals_${data.model_type || 'lstm'}_${data.timeframe || 'D1'}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert('Export failed: ' + (e.message || e));
+    }
+}
+
 /* -- Action buttons ------------------------------------------------ */
 async function runPredictNow() {
     if (!confirm('Execute prediction now?')) return;
@@ -505,11 +547,21 @@ function connectLiveWS() {
         try {
             const d = JSON.parse(e.data);
             applyLiveData(d.status, d.trades, d.equity, d.account);
+
+            // Detect data_loading transition: loading → ready
+            const wasLoading = _dataLoading;
+            _dataLoading = !!(d.status && d.status.data_loading);
+            if (wasLoading && !_dataLoading) {
+                // Cache refresh just finished - reload charts automatically
+                loadDashboard();
+            }
+            // Keep loader visible while still loading
+            if (_dataLoading) showCandleLoader('Reloading data…');
         } catch (err) { console.warn('[WS] parse error:', err); }
     };
 
     _ws.onclose = () => {
-        console.log('[WS] closed — reconnecting in 5 s');
+        console.log('[WS] closed - reconnecting in 5 s');
         _ws = null;
         _wsRetry = setTimeout(connectLiveWS, 5000);
     };
@@ -527,7 +579,7 @@ const LC_IDS = [
     'lc-conf-low-max','lc-conf-avg-max',
     'lc-ps-low','lc-ps-avg','lc-ps-high',
     'lc-volume-min','lc-volume-max',
-    'lc-pred-time','lc-exec-time','lc-check-min',
+    'lc-pred-time','lc-exec-time',
 ];
 let _lcSaved = {};                       // snapshot of last-saved values
 
@@ -597,6 +649,17 @@ async function validateSymbol() {
     }
 }
 
+/** Update page title, navbar brand and chart title to reflect the current symbol. */
+function updateSymbolTitles(symbol, timeframe) {
+    if (!symbol) return;
+    document.title = `${symbol} - AI Trading Dashboard`;
+    const navSym = $('nav-symbol');
+    if (navSym) navSym.textContent = symbol;
+    if (timeframe) {
+        $('chart-title').textContent = `${symbol} - ${timeframe}`;
+    }
+}
+
 async function loadLiveConfig() {
     try {
         const c = await apiFetch(API + '/api/live/config');
@@ -618,7 +681,6 @@ async function loadLiveConfig() {
         $('lc-volume-max').value = c.volume_max ?? 30;
         $('lc-pred-time').value = String(c.prediction_hour).padStart(2,'0')+':'+String(c.prediction_minute).padStart(2,'0');
         $('lc-exec-time').value = String(c.execution_hour).padStart(2,'0')+':'+String(c.execution_minute).padStart(2,'0');
-        $('lc-check-min').value = c.check_positions_minute;
         _lcSaved = _lcSnapshot();
         _lcClearDirty();
     } catch(e) { console.warn('Could not load live config:', e); }
@@ -651,7 +713,6 @@ async function saveLiveConfig() {
         prediction_minute: parseInt($('lc-pred-time').value.split(':')[1]),
         execution_hour: parseInt($('lc-exec-time').value.split(':')[0]),
         execution_minute: parseInt($('lc-exec-time').value.split(':')[1]),
-        check_positions_minute: parseInt($('lc-check-min').value),
     };
 
     try {
@@ -665,6 +726,11 @@ async function saveLiveConfig() {
         banner.classList.remove('d-none');
         _lcSaved = _lcSnapshot();
         _lcClearDirty();
+        // Update titles immediately so the user sees the new symbol/timeframe
+        updateSymbolTitles(payload.symbol, payload.timeframe);
+        // Show candle loader while pipeline reloads in background
+        _dataLoading = true;
+        showCandleLoader('Reloading data…');
     } catch(e) {
         banner.className = 'mt-2 alert alert-danger py-2 mb-0';
         banner.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + (e.message || 'Failed to save.');
@@ -695,6 +761,11 @@ async function resetLiveConfig() {
         banner.classList.remove('d-none');
         // Reload the form with the fresh default values
         await loadLiveConfig();
+        // Update titles with the default symbol/timeframe
+        updateSymbolTitles($('lc-symbol').value, $('lc-timeframe').value);
+        // Show candle loader while pipeline reloads in background
+        _dataLoading = true;
+        showCandleLoader('Reloading data…');
     } catch(e) {
         banner.className = 'mt-2 alert alert-danger py-2 mb-0';
         banner.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + (e.message || 'Failed to reset.');

@@ -1,13 +1,16 @@
 {
     "symbol": "ETHUSD",
     "print_width": 100,
+
     "paths": {
         "dataset_raw": "datasets/raw",
         "dataset_final": "datasets/final"
     },
+
     "trading": {
         "lookahead": 4
     },
+
     "trading_10": {
         "atr_mult": 1.5,
         "threshold": 0.35,
@@ -21,6 +24,7 @@
             "high": 0.04
         }
     },
+
     "trading_4": {
         "atr_mult": 1.5,
         "threshold": 0.35,
@@ -34,12 +38,14 @@
             "high": 0.04
         }
     },
+
     "backtest": {
         "backtest_window": 365,
         "predict_window": 30,
         "initial_capital": 100000,
         "commission": 0.001
     },
+
     "lstm_classifier_10": {
         "seq_len": 60,
         "batch_size": 128,
@@ -54,32 +60,22 @@
         "val_pct": 0.05,
         "feature_selection": {
             "mode": "manual",
-            "corr_threshold": 0.7,
+            "corr_threshold": 0.70,
             "feature_cols": [
-                "candle_body",
-                "candle_shadow_up",
-                "candle_shadow_low",
-                "BB_pct",
-                "RSI_5",
-                "dist_SMA_20",
-                "dist_SMA_50",
-                "MACD_norm",
-                "ATR_norm",
-                "BB_width_pct",
-                "OBV_pct",
-                "log_ret",
-                "vol_rel",
-                "ROC_10",
-                "StochRSI_14_k"
+                "candle_body", "candle_shadow_up", "candle_shadow_low", "BB_pct",
+                "RSI_5", "dist_SMA_20", "dist_SMA_50", "MACD_norm",
+                "ATR_norm", "BB_width_pct", "OBV_pct", "log_ret",
+                "vol_rel", "ROC_10", "StochRSI_14_k"
             ]
         }
     },
+
     "lstm_classifier_4": {
         "seq_len": 20,
         "batch_size": 128,
         "epochs": 100,
         "learning_rate": 0.001,
-        "hidden_size": 64,
+        "hidden_size": 128,
         "num_layers": 3,
         "num_classes": 3,
         "dropout": 0.2,
@@ -88,26 +84,16 @@
         "val_pct": 0.05,
         "feature_selection": {
             "mode": "manual",
-            "corr_threshold": 0.7,
+            "corr_threshold": 0.70,
             "feature_cols": [
-                "candle_body",
-                "candle_shadow_up",
-                "candle_shadow_low",
-                "BB_pct",
-                "RSI_5",
-                "dist_SMA_20",
-                "dist_SMA_50",
-                "MACD_norm",
-                "ATR_norm",
-                "BB_width_pct",
-                "OBV_pct",
-                "log_ret",
-                "vol_rel",
-                "ROC_10",
-                "StochRSI_14_k"
+                "candle_body", "candle_shadow_up", "candle_shadow_low", "BB_pct",
+                "RSI_5", "dist_SMA_20", "dist_SMA_50", "MACD_norm",
+                "ATR_norm", "BB_width_pct", "OBV_pct", "log_ret",
+                "vol_rel", "ROC_10", "StochRSI_14_k"
             ]
         }
     },
+
     "lstm_classifier": {
         "seq_len": 60,
         "batch_size": 128,
@@ -124,33 +110,19 @@
             "mode": "auto",
             "corr_threshold": 0.92,
             "feature_cols": [
-                "candle_body",
-                "candle_shadow_up",
-                "candle_shadow_low",
-                "BB_pct",
-                "RSI_5",
-                "dist_SMA_20",
-                "dist_SMA_50",
-                "MACD_norm",
-                "ATR_norm",
-                "BB_width_pct",
-                "OBV_pct",
-                "log_ret",
-                "vol_rel",
-                "ROC_10",
-                "StochRSI_14_k"
+                "candle_body", "candle_shadow_up", "candle_shadow_low", "BB_pct",
+                "RSI_5", "dist_SMA_20", "dist_SMA_50", "MACD_norm",
+                "ATR_norm", "BB_width_pct", "OBV_pct", "log_ret",
+                "vol_rel", "ROC_10", "StochRSI_14_k"
             ]
         }
     },
+
     "mlp_10": {
         "batch_size": 64,
         "epochs": 200,
         "learning_rate": 0.001,
-        "hidden_sizes": [
-            64,
-            32,
-            64
-        ],
+        "hidden_sizes": [64, 32, 64],
         "num_classes": 3,
         "dropout": 0.2,
         "seed": 42,
@@ -158,35 +130,22 @@
         "val_pct": 0.05,
         "feature_selection": {
             "mode": "manual",
-            "corr_threshold": 0.7,
+            "corr_threshold": 0.70,
             "feature_cols": [
-                "candle_body",
-                "candle_shadow_up",
-                "candle_shadow_low",
-                "BB_pct",
-                "RSI_5",
-                "dist_SMA_20",
-                "dist_SMA_50",
-                "MACD_norm",
-                "ATR_norm",
-                "BB_width_pct",
-                "OBV_pct",
-                "log_ret",
-                "vol_rel",
-                "ROC_10",
-                "StochRSI_14_k"
+                "candle_body", "candle_shadow_up", "candle_shadow_low", "BB_pct",
+                "RSI_5", "dist_SMA_20", "dist_SMA_50", "MACD_norm",
+                "ATR_norm", "BB_width_pct", "OBV_pct", "log_ret",
+                "vol_rel", "ROC_10", "StochRSI_14_k"
             ]
         }
     },
+
+    
     "mlp_4": {
         "batch_size": 128,
         "epochs": 200,
         "learning_rate": 0.0001,
-        "hidden_sizes": [
-            128,
-            64,
-            128
-        ],
+        "hidden_sizes": [128, 64, 128],
         "num_classes": 3,
         "dropout": 0.4,
         "seed": 42,
@@ -194,35 +153,22 @@
         "val_pct": 0.05,
         "feature_selection": {
             "mode": "manual",
-            "corr_threshold": 0.7,
+            "corr_threshold": 0.70,
             "feature_cols": [
-                "candle_body",
-                "candle_shadow_up",
-                "candle_shadow_low",
-                "BB_pct",
-                "RSI_5",
-                "dist_SMA_20",
-                "dist_SMA_50",
-                "MACD_norm",
-                "ATR_norm",
-                "BB_width_pct",
-                "OBV_pct",
-                "log_ret",
-                "vol_rel",
-                "ROC_10",
-                "StochRSI_14_k"
+                "candle_body", "candle_shadow_up", "candle_shadow_low", "BB_pct",
+                "RSI_5", "dist_SMA_20", "dist_SMA_50", "MACD_norm",
+                "ATR_norm", "BB_width_pct", "OBV_pct", "log_ret",
+                "vol_rel", "ROC_10", "StochRSI_14_k"
             ]
         }
     },
+
+    
     "mlp": {
         "batch_size": 128,
         "epochs": 200,
         "learning_rate": 0.0001,
-        "hidden_sizes": [
-            128,
-            64,
-            128
-        ],
+        "hidden_sizes": [128, 64, 128],
         "num_classes": 3,
         "dropout": 0.4,
         "seed": 42,
@@ -232,35 +178,25 @@
             "mode": "auto",
             "corr_threshold": 0.92,
             "feature_cols": [
-                "candle_body",
-                "candle_shadow_up",
-                "candle_shadow_low",
-                "BB_pct",
-                "RSI_5",
-                "dist_SMA_20",
-                "dist_SMA_50",
-                "MACD_norm",
-                "ATR_norm",
-                "BB_width_pct",
-                "OBV_pct",
-                "log_ret",
-                "vol_rel",
-                "ROC_10",
-                "StochRSI_14_k"
+                "candle_body", "candle_shadow_up", "candle_shadow_low", "BB_pct",
+                "RSI_5", "dist_SMA_20", "dist_SMA_50", "MACD_norm",
+                "ATR_norm", "BB_width_pct", "OBV_pct", "log_ret",
+                "vol_rel", "ROC_10", "StochRSI_14_k"
             ]
         }
     },
+
     "live_trading": {
         "timeframe": "D1",
         "model_type": "lstm",
         "volume_min": 0.01,
-        "volume_max": 30.0,
+        "volume_max": 30.00,
         "prediction_hour": 0,
-        "prediction_minute": 5,
+        "prediction_minute": 15,
         "execution_hour": 0,
-        "execution_minute": 10,
-        "check_positions_minute": 30
+        "execution_minute": 30
     },
+
     "dashboard": {
         "host": "0.0.0.0",
         "port": 8050,

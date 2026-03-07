@@ -1,5 +1,5 @@
 """
-ETHUSD AI Trading Dashboard — FastAPI Backend
+ETHUSD AI Trading Dashboard - FastAPI Backend
 Serves OHLC data, backtest trades, equity curve, AI predictions,
 and LIVE trading data with scheduled execution.
 """
@@ -79,6 +79,7 @@ def _gather_live_data() -> dict:
     status["mt5_connected"] = _mt5_service is not None
     status["model_type"] = CONFIG["live_trading"].get("model_type", "lstm")
     status["timeframe"] = CONFIG["live_trading"].get("timeframe", "D1")
+    status["data_loading"] = _data_loading
     if _scheduler and _scheduler.running:
         status["scheduler_running"] = True
         jobs = {j.id: j for j in _scheduler.get_jobs()}
@@ -156,10 +157,168 @@ async def _broadcast_live():
     _ws_clients.difference_update(dead)
 
 
+# --- POSITION CHECK (integrated in WS loop) ---------------------------------
+
+def _get_equity_for_pnl(mt5_service) -> float:
+    """Return current account equity from MT5, falling back to initial_capital."""
+    try:
+        info = mt5_service.get_account_info()
+        if info and info.get("equity"):
+            return float(info["equity"])
+    except Exception:
+        pass
+    return float(CONFIG["backtest"].get("initial_capital", 100_000))
+
+
+def _close_time_barrier(mt5_service, trade):
+    """Force-close a position whose lookahead (time barrier) has expired.
+    Reads PnL from MT5 history deals after closing."""
+    from datetime import timezone as _tz, datetime as _dt, timedelta as _td
+    ticket = trade.get("mt5_ticket", 0)
+    trade_id = trade["id"]
+    direction = trade["direction"]
+    entry = trade["entry_price"] or 0.0
+    symbol = CONFIG.get("symbol", "ETHUSD")
+
+    try:
+        mt5_service.close_position(
+            ticket, symbol=symbol, comment=f"time-barrier-{trade_id}"
+        )
+
+        # Wait briefly for MT5 to register the deal in history
+        import time
+        time.sleep(1)
+
+        # Read the actual fill price and profit from history deals
+        exit_price = entry  # fallback
+        pnl = 0.0
+        try:
+            exec_time_str = trade.get("exec_time")
+            from_dt = (
+                _dt.fromisoformat(exec_time_str).replace(tzinfo=_tz.utc)
+                if exec_time_str else _dt.now(_tz.utc) - _td(days=30)
+            )
+            deals = mt5_service.get_history_deals(
+                from_date=from_dt,
+                to_date=_dt.now(_tz.utc),
+            )
+            if deals is not None and not deals.empty:
+                closing_deals = deals[deals["position_id"] == ticket] if ticket else pd.DataFrame()
+                if not closing_deals.empty:
+                    exit_price = float(closing_deals.iloc[-1]["price"])
+                    mt5_profit = float(closing_deals["profit"].sum())
+                    equity = _get_equity_for_pnl(mt5_service)
+                    pnl = mt5_profit / equity if equity else 0.0
+        except Exception as e_hist:
+            log(f"  Could not read closing deal for {trade_id}: {e_hist}")
+            # Fallback: last tick price, compute PnL from prices
+            try:
+                tick = mt5_service.get_last_tick(symbol)
+                exit_price = tick.get("bid" if direction == "LONG" else "ask", entry)
+                if entry and entry != 0:
+                    if direction == "LONG":
+                        pnl = (exit_price - entry) / entry
+                    else:
+                        pnl = (entry - exit_price) / entry
+            except Exception:
+                pass
+
+        trade_logger.mark_closed(trade_id, exit_price, pnl)
+        trade_logger.update_trade(trade_id, comment="time_barrier")
+        log(f"\x1b[93mTrade {trade_id} force-closed (TIME BARRIER): "
+            f"exit={exit_price:.2f}  PnL={pnl:.4%}\x1b[0m")
+    except Exception as e:
+        log(f"\x1b[91mError force-closing trade {trade_id} (time barrier): {e}\x1b[0m")
+
+
+def _close_from_history(mt5_service, trade):
+    """Search in history deals the trade result (TP/SL hit detected)."""
+    try:
+        from datetime import timezone as _tz, datetime as _dt, timedelta as _td
+        exec_time = _dt.fromisoformat(trade["exec_time"]) if trade["exec_time"] else _dt.now() - _td(days=30)
+        deals = mt5_service.get_history_deals(
+            from_date=exec_time,
+            to_date=_dt.now(_tz.utc),
+        )
+        if deals is not None and not deals.empty:
+            ticket = trade.get("mt5_ticket")
+            deal = deals[deals["position_id"] == ticket] if ticket else pd.DataFrame()
+
+            if not deal.empty:
+                exit_price = float(deal.iloc[-1]["price"])
+                mt5_profit = float(deal["profit"].sum())
+                equity = _get_equity_for_pnl(mt5_service)
+                pnl = mt5_profit / equity if equity else 0.0
+                trade_logger.mark_closed(trade["id"], exit_price, pnl)
+                log(f"\x1b[92mTrade {trade['id']} closed (TP/SL): exit={exit_price:.2f}, PnL={pnl:.4%}\x1b[0m")
+    except Exception as e:
+        log(f"\x1b[91mError retrieving history for {trade['id']}: {e}\x1b[0m")
+
+
+def _check_open_positions():
+    """Check if open trades have been closed (TP/SL) or if the time barrier
+    (lookahead window) has expired - force-close in that case.
+    Called from the periodic WS broadcast loop."""
+    if _mt5_service is None:
+        return
+
+    open_trades = trade_logger.get_open_trades()
+    if not open_trades:
+        return
+
+    from datetime import timezone as _tz, datetime as _dt, timedelta as _td
+    lookahead = CONFIG.get("trading", {}).get("lookahead", 4)
+    la_key = f"trading_{lookahead}"
+
+    for trade in open_trades:
+        ticket = trade.get("mt5_ticket", 0)
+
+        # -- 1. Time barrier: close if lookahead window has expired --
+        exec_time_str = trade.get("exec_time")
+        if exec_time_str:
+            try:
+                exec_dt = _dt.fromisoformat(exec_time_str)
+                if exec_dt.tzinfo is None:
+                    exec_dt = exec_dt.replace(tzinfo=_tz.utc)
+                deadline = exec_dt + _td(days=lookahead)
+                if _dt.now(_tz.utc) >= deadline:
+                    log(f"Trade {trade['id']}: TIME BARRIER hit "
+                        f"(open since {exec_time_str}, LOOKAHEAD={lookahead}d)")
+                    if ticket:
+                        _close_time_barrier(_mt5_service, trade)
+                    else:
+                        log(f"\x1b[93mTrade {trade['id']}: time barrier hit "
+                            f"but no MT5 ticket - cannot force-close\x1b[0m")
+                    continue  # skip TP/SL check for this trade
+            except Exception as e:
+                log(f"\x1b[91mError evaluating time barrier for {trade['id']}: {e}\x1b[0m")
+
+        # -- 2. Check with MT5 for TP/SL hit --
+        if ticket:
+            try:
+                positions = _mt5_service.get_active_positions()
+                if positions is not None:
+                    pos = positions[positions["ticket"] == ticket]
+                    if pos.empty:
+                        # No longer active - closed by TP/SL, get results from history
+                        _close_from_history(_mt5_service, trade)
+                else:
+                    _close_from_history(_mt5_service, trade)
+            except Exception as e:
+                log(f"\x1b[91mError checking ticket {ticket}: {e}\x1b[0m")
+
+
 async def _periodic_broadcast():
-    """Background task: push live data to all WS clients every 10 seconds."""
+    """Background task: push live data to all WS clients every 10 seconds.
+    Also checks open positions for TP/SL hits and time barrier expiry."""
+    loop = asyncio.get_running_loop()
     while True:
         await asyncio.sleep(10)
+        # Check positions in a thread to avoid blocking the event loop
+        try:
+            await loop.run_in_executor(_executor, _check_open_positions)
+        except Exception as e:
+            log(f"\x1b[91mPosition check error: {e}\x1b[0m")
         await _broadcast_live()
 
 
@@ -168,6 +327,7 @@ _scheduler = None
 
 # --- CACHED STATE ------------------------------------------------------------
 _cache: dict = {}
+_data_loading: bool = False
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="heavy-work")
 
 
@@ -181,7 +341,7 @@ def _load_data(target: dict):
         # 1. Generate dataset from MT5 (if connected) or load existing raw datasets
         if _mt5_service:
             # load from MT5 and save to raw
-            path_list_raw = dataset_utils.generate_dataset(_mt5_service)
+            path_list_raw = dataset_utils.generate_dataset(_mt5_service, symbol=SYMBOL, timeframes=[TIMEFRAME])
         else:
             # fallback: load existing raw datasets if MT5 not connected
             log("\x1b[33mUsing existing dataset files (MT5 not connected)\x1b[0m")
@@ -198,7 +358,7 @@ def _load_data(target: dict):
             path_list_raw, lookahead=LOOKAHEAD, atr_mult=ATR_MULT
         )
 
-        # 4. Cache final datasets — pick the configured timeframe
+        # 4. Cache final datasets - pick the configured timeframe
         selected_tf = CONFIG["live_trading"].get("timeframe", "D1")
         final_path = None
         for path in path_list_final:
@@ -245,7 +405,7 @@ def _load_data(target: dict):
 
         target["df"] = df_full
 
-        log("Ready — data loaded (backtest available on demand).")
+        log("Ready - data loaded (backtest available on demand).")
 
     except Exception as exc:
         import traceback
@@ -267,7 +427,8 @@ def _refresh_cache():
     """Reload dataset + retrain model into a fresh dict, then swap atomically.
     Called periodically so the dashboard stays in sync with new candles.
     Old cache remains available to readers until the swap completes."""
-    global _cache
+    global _cache, _data_loading
+    _data_loading = True
     log("\x1b[36mRefreshing cache...\x1b[0m")
     new_cache = {}
     _load_data(new_cache)
@@ -275,7 +436,16 @@ def _refresh_cache():
         _cache = new_cache
         log("\x1b[32mCache refreshed successfully.\x1b[0m")
     else:
-        log(f"\x1b[31mCache refresh failed — keeping previous data: {new_cache['_error']}\x1b[0m")
+        log(f"\x1b[31mCache refresh failed - keeping previous data: {new_cache['_error']}\x1b[0m")
+    _data_loading = False
+    # Notify all WS clients that data is now ready
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.run_coroutine_threadsafe(_broadcast_live(), loop)
+    except Exception:
+        pass
 
 
 def _check_data_ready():
@@ -300,11 +470,10 @@ def _check_data_ready():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log("\x1b[32mSTARTUP...\x1b[0m")
-    global _scheduler
+    global _scheduler, _data_loading
     # Connect to MT5 (if available)
     _try_connect_mt5()
-    # Load data synchronously — server won't accept requests until yield anyway
-    _ensure_data()
+
     # Startup live trading scheduler
     _scheduler = live_trader.setup_scheduler(mt5_service=_mt5_service)
 
@@ -325,7 +494,12 @@ async def lifespan(app: FastAPI):
     # Start periodic WebSocket broadcast
     _broadcast_task = asyncio.create_task(_periodic_broadcast())
 
-    log("\x1b[32mInitial data load complete.\x1b[0m")
+    # Load data in background thread - server starts immediately,
+    # the frontend shows a loader on the candlestick chart until ready.
+    _data_loading = True
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(_executor, _refresh_cache)
+    log("\x1b[32mServer ready - data pipeline loading in background.\x1b[0m")
 
     yield
 
@@ -453,7 +627,7 @@ async def api_bt_run(
             "confidence_thresholds": confidence_thresholds,
             "position_sizes": position_sizes,
         }
-        log(f"Backtest complete — {len(trades)} trades.")
+        log(f"Backtest complete - {len(trades)} trades.")
         return {"status": "ok", "trades": len(trades)}
     except Exception as exc:
         import traceback
@@ -559,7 +733,53 @@ async def api_signals(last_n: int = Query(400, ge=30, le=5000)):
     return markers
 
 
+@app.get("/api/bt/export_signals")
+async def api_bt_export_signals():
+    """Export backtest trades as MT5 EA-compatible JSON signals.
+    Returns the JSON payload directly (the frontend triggers the download)."""
+    if err := _check_backtest_ready():
+        return err
+
+    trades = _cache["backtest_trades"]
+    params = _cache["backtest_params"]
+
+    signals = []
+    for t in trades:
+        signals.append({
+            "signal_time":      t["time"],
+            "direction":        t["direction"],
+            "signal_price":     t.get("signal_price", t["entry"]),
+            "tp":               t["tp"],
+            "sl":               t["sl"],
+            "lookahead":        t.get("lookahead", params["lookahead"]),
+            "confidence":       round(t["confidence"], 6),
+            "confidence_tier":  t.get("confidence_tier", "AVG"),
+            "position_size_pct": t.get("position_size_pct", 0.01),
+        })
+
+    from datetime import datetime as _dt
+    payload = {
+        "symbol":        CONFIG.get("symbol", "ETHUSD"),
+        "timeframe":     CONFIG.get("live_trading", {}).get("timeframe", "D1"),
+        "lookahead":     params["lookahead"],
+        "atr_mult":      params["atr_mult"],
+        "threshold":     params["threshold"],
+        "model_type":    params["model_type"],
+        "generated_at":  _dt.now().isoformat(),
+        "total_signals": len(signals),
+        "signals":       signals,
+    }
+
+    return payload
+
+
 # --- LIVE TRADING ROUTES -----------------------------------------------------
+
+@app.get("/api/data-status")
+async def api_data_status():
+    """Check whether the data pipeline is currently loading."""
+    return {"loading": _data_loading}
+
 
 @app.get("/api/prediction")
 async def api_prediction():
@@ -707,7 +927,7 @@ async def api_validate_symbol(symbol: str = Body(..., embed=True)):
     if not symbol:
         return JSONResponse(status_code=400, content={"valid": False, "error": "Symbol cannot be empty."})
     if _mt5_service is None:
-        return JSONResponse(status_code=503, content={"valid": False, "error": "MT5 is not connected — cannot validate symbol."})
+        return JSONResponse(status_code=503, content={"valid": False, "error": "MT5 is not connected - cannot validate symbol."})
     try:
         _mt5_service.get_symbol_info(symbol)
         return {"valid": True, "symbol": symbol}
@@ -734,7 +954,6 @@ async def api_live_config_get():
         "prediction_minute": CONFIG["live_trading"]["prediction_minute"],
         "execution_hour": CONFIG["live_trading"]["execution_hour"],
         "execution_minute": CONFIG["live_trading"]["execution_minute"],
-        "check_positions_minute": CONFIG["live_trading"]["check_positions_minute"],
     }
 
 
@@ -753,7 +972,6 @@ async def api_live_config_save(
     prediction_minute: int = Body(...),
     execution_hour: int = Body(...),
     execution_minute: int = Body(...),
-    check_positions_minute: int = Body(...),
 ):
     """Save live trading config to config.json and reschedule jobs."""
     global SYMBOL, LOOKAHEAD, ATR_MULT, THRESHOLD, CONFIDENCE_THRESHOLDS, POSITION_SIZES
@@ -765,7 +983,7 @@ async def api_live_config_save(
     # If symbol changed, validate via MT5 and reconnect
     if symbol != SYMBOL:
         if _mt5_service is None:
-            return JSONResponse(status_code=503, content={"error": "MT5 not connected — cannot change symbol."})
+            return JSONResponse(status_code=503, content={"error": "MT5 not connected - cannot change symbol."})
         try:
             _mt5_service.get_symbol_info(symbol)
         except Exception:
@@ -802,7 +1020,6 @@ async def api_live_config_save(
     CONFIG["live_trading"]["prediction_minute"] = prediction_minute
     CONFIG["live_trading"]["execution_hour"] = execution_hour
     CONFIG["live_trading"]["execution_minute"] = execution_minute
-    CONFIG["live_trading"]["check_positions_minute"] = check_positions_minute
 
     # Update module-level variables
     THRESHOLD = threshold
@@ -843,15 +1060,11 @@ async def api_live_config_save(
                 "daily_execution",
                 trigger=CronTrigger(hour=execution_hour, minute=execution_minute),
             )
-            _scheduler.reschedule_job(
-                "check_positions",
-                trigger=CronTrigger(minute=check_positions_minute),
-            )
-            log(f"Scheduler rescheduled: pred@{prediction_hour}:{prediction_minute:02d}, exec@{execution_hour}:{execution_minute:02d}, check@xx:{check_positions_minute:02d}")
+            log(f"Scheduler rescheduled: pred@{prediction_hour}:{prediction_minute:02d}, exec@{execution_hour}:{execution_minute:02d}")
         except Exception as e:
             log(f"\x1b[31mFailed to reschedule: {e}\x1b[0m")
 
-    # Reload data in background — symbol / timeframe / lookahead may have changed
+    # Reload data in background - symbol / timeframe / lookahead may have changed
     loop = asyncio.get_running_loop()
     loop.run_in_executor(_executor, _refresh_cache)
     log("\x1b[36mCache refresh queued after config change.\x1b[0m")
@@ -905,7 +1118,7 @@ async def api_live_config_reset():
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to reset config: {e}"})
 
-    # Reload data in background — defaults may differ from current config
+    # Reload data in background - defaults may differ from current config
     loop = asyncio.get_running_loop()
     loop.run_in_executor(_executor, _refresh_cache)
     log("\x1b[36mCache refresh queued after config reset.\x1b[0m")
@@ -935,7 +1148,6 @@ async def api_live_config_defaults():
             "prediction_minute": defaults["live_trading"]["prediction_minute"],
             "execution_hour": defaults["live_trading"]["execution_hour"],
             "execution_minute": defaults["live_trading"]["execution_minute"],
-            "check_positions_minute": defaults["live_trading"]["check_positions_minute"],
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to load defaults: {e}"})
@@ -967,13 +1179,13 @@ async def api_close_position(identifier: str = Body(..., embed=True)):
         await _broadcast_live()
         return {"status": "ok", "message": f"Pending trade {trade['id']} cancelled."}
 
-    # Open trade — requires MT5 if it has a real ticket
+    # Open trade - requires MT5 if it has a real ticket
     ticket = trade.get("mt5_ticket", 0)
     direction = trade["direction"]
     entry = trade["entry_price"]
 
     if ticket and _mt5_service is None:
-        return JSONResponse(status_code=503, content={"error": "MT5 not connected — cannot close a live position."})
+        return JSONResponse(status_code=503, content={"error": "MT5 not connected - cannot close a live position."})
 
     # Close on MT5 if connected and has a real ticket
     if _mt5_service is not None and ticket:

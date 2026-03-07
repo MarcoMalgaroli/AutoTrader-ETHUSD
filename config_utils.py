@@ -8,15 +8,15 @@ correct config section based on the **active** lookahead stored in
 
 Two config files
 ----------------
-* ``config.default.json`` — immutable baseline (committed to VCS)
-* ``config.json``         — user-editable copy (written by the dashboard)
+* ``config.default.json`` - immutable baseline (committed to VCS)
+* ``config.json``         - user-editable copy (written by the dashboard)
 
 Convention in config.json
 -------------------------
-* ``lstm_classifier_10`` / ``lstm_classifier_4`` — LSTM hyper-parameters
-* ``mlp_10`` / ``mlp_4``                         — MLP hyper-parameters
-* ``trading_10`` / ``trading_4``                  — per-horizon trading params
-* ``trading``                                     — common trading params
+* ``lstm_classifier_10`` / ``lstm_classifier_4`` - LSTM hyper-parameters
+* ``mlp_10`` / ``mlp_4``                         - MLP hyper-parameters
+* ``trading_10`` / ``trading_4``                  - per-horizon trading params
+* ``trading``                                     - common trading params
   (lookahead selector, initial_capital, commission)
 
 Usage::

@@ -1,5 +1,5 @@
 """
-Trade Logger — persist live trades in a SQLite database.
+Trade Logger - persist live trades in a SQLite database.
 Each trade has: id, direction, signal_time, exec_time, entry_price,
 tp, sl, status (pending | open | closed | cancelled), exit_price, pnl_pct,
 close_time, mt5_ticket, confidence, probs, comment.
@@ -100,7 +100,7 @@ def _enrich_with_mt5(trades: List[dict]) -> List[dict]:
 
     enriched = []
     for t in trades:
-        t = dict(t)  # shallow copy — don't mutate original
+        t = dict(t)  # shallow copy - don't mutate original
         ticket = t.get("mt5_ticket", 0)
         if t["status"] == "open" and ticket and ticket in mt5_pos:
             pos = mt5_pos[ticket]

@@ -298,29 +298,36 @@ def backtest_calc_equity(df: pd.DataFrame, pred_arr: np.ndarray, probs_arr: np.n
 
         if confidence < low_max:
             adjusted_position_size = _ps["low"]
-            print(f"  \x1b[91;1m-> LOW confidence ({confidence:.2%}) — bet {_ps['low']:.2%}\x1b[0m")
+            _tier = "LOW"
+            print(f"  \x1b[91;1m-> LOW confidence ({confidence:.2%}) - bet {_ps['low']:.2%}\x1b[0m")
         elif confidence < avg_max:
             adjusted_position_size = _ps["avg"]
-            print(f"  \x1b[93;1m-> MEDIUM confidence ({confidence:.2%}) — bet {_ps['avg']:.2%}\x1b[0m")
+            _tier = "AVG"
+            print(f"  \x1b[93;1m-> MEDIUM confidence ({confidence:.2%}) - bet {_ps['avg']:.2%}\x1b[0m")
         else:
             adjusted_position_size = _ps["high"]
-            print(f"  \x1b[92;1m-> HIGH confidence ({confidence:.2%}) — bet {_ps['high']:.2%}\x1b[0m")
+            _tier = "HIGH"
+            print(f"  \x1b[92;1m-> HIGH confidence ({confidence:.2%}) - bet {_ps['high']:.2%}\x1b[0m")
 
         equity_change = current_capital * net_return * adjusted_position_size
         current_capital += equity_change
 
         trade_returns.append(net_return)
         equity.append(current_capital)
-        
+
         trades.append({
             "time": str(pd.Timestamp(time_arr[i])),
             "direction": "LONG" if pred_arr[i] == 1 else "SHORT",
+            "signal_price": round(float(signal_price), 5),
             "entry": round(float(entry_price), 2),
             "tp": round(float(tp_price), 2),
             "sl": round(float(sl_price), 2),
+            "lookahead": lookahead,
             "return_pct": net_return,
             "win": bool(net_return > 0),
             "confidence": confidence,
+            "confidence_tier": _tier,
+            "position_size_pct": adjusted_position_size,
         })
 
     # Build date index for equity curve

@@ -1,5 +1,5 @@
 """
-Live Trader — Scheduler + Pipeline for automatic trading ETHUSD.
+Live Trader - Scheduler + Pipeline for automatic trading ETHUSD.
 
 Daily workflow:
   23:55 (configurable)  -->  Download data from MT5, feature engineering, LSTM prediction
@@ -167,7 +167,7 @@ def calculate_volume(confidence: float, direction: str, mt5_service=None) -> flo
 
     log(f"Volume calc: equity=${equity:,.0f} × {pct:.2%} = ${dollar_risk:,.0f} "
         f"→ {raw_volume:.4f} lots → clamped {volume:.2f} "
-        f"[{effective_min}–{effective_max}]")
+        f"[{effective_min}-{effective_max}]")
     return volume
 
 
@@ -408,154 +408,15 @@ def job_execute(mt5_service=None):
             log(f"\x1b[91mMT5 error: {e}\x1b[0m")
 
     else:
-        # MT5 not connected — cancel the pending trade
-        log("\x1b[93mMT5 not connected — trade cancelled\x1b[0m")
+        # MT5 not connected - cancel the pending trade
+        log("\x1b[93mMT5 not connected - trade cancelled\x1b[0m")
         trade_logger.mark_cancelled(trade_id, comment="MT5 not connected")
         state["pending_trade_id"] = None
 
     log("=== JOB EXECUTION END ===\n")
 
 
-# --- JOB 3: CHECK OPEN POSITIONS (each hour) ---------------------------------
 
-def job_check_positions(mt5_service=None):
-    """
-    Check if open trades have been closed (TP/SL reached) or if the time
-    barrier (lookahead window) has expired — in that case force-close the
-    position on MT5.
-    """
-    _reload_config()
-    open_trades = trade_logger.get_open_trades()
-    if not open_trades:
-        return
-
-    log(f"Check {len(open_trades)} open trades...")
-
-    from datetime import timezone as _tz
-
-    for trade in open_trades:
-        ticket = trade.get("mt5_ticket", 0)
-
-        # -- 1. Time barrier: close if lookahead window has expired --
-        exec_time_str = trade.get("exec_time")
-        if exec_time_str:
-            try:
-                exec_dt = datetime.fromisoformat(exec_time_str)
-                if exec_dt.tzinfo is None:
-                    exec_dt = exec_dt.replace(tzinfo=_tz.utc)
-                deadline = exec_dt + timedelta(days=LOOKAHEAD)
-                if datetime.now(_tz.utc) >= deadline:
-                    log(f"Trade {trade['id']}: TIME BARRIER hit "
-                        f"(open since {exec_time_str}, LOOKAHEAD={LOOKAHEAD}d)")
-                    if mt5_service is not None and ticket:
-                        _close_time_barrier(mt5_service, trade)
-                    else:
-                        log(f"\x1b[93mTrade {trade['id']}: time barrier hit "
-                            f"but MT5 not available — cannot force-close\x1b[0m")
-                    continue  # skip TP/SL check for this trade
-            except Exception as e:
-                log(f"\x1b[91mError evaluating time barrier for {trade['id']}: {e}\x1b[0m")
-
-        # -- 2. Check with MT5 for TP/SL hit --
-        if mt5_service is not None and ticket:
-            try:
-                positions = mt5_service.get_active_positions()
-                if positions is not None:
-                    pos = positions[positions["ticket"] == ticket]
-                    if pos.empty:
-                        # Closed position — get results from history deals
-                        _close_from_history(mt5_service, trade)
-                else:
-                    # No open positions, may be closed
-                    _close_from_history(mt5_service, trade)
-            except Exception as e:
-                log(f"\x1b[91mError checking ticket {ticket}: {e}\x1b[0m")
-
-
-def _get_equity(mt5_service) -> float:
-    """Return current account equity from MT5, falling back to initial_capital."""
-    try:
-        info = mt5_service.get_account_info()
-        if info and info.get("equity"):
-            return float(info["equity"])
-    except Exception:
-        pass
-    return float(CONFIG["backtest"].get("initial_capital", 100_000))
-
-
-def _close_time_barrier(mt5_service, trade):
-    """Force-close a position whose lookahead (time barrier) has expired."""
-    from datetime import timezone as _tz
-    ticket = trade.get("mt5_ticket", 0)
-    trade_id = trade["id"]
-    direction = trade["direction"]
-    entry = trade["entry_price"] or 0.0
-
-    try:
-        mt5_service.close_position(
-            ticket, symbol=SYMBOL, comment=f"time-barrier-{trade_id}"
-        )
-
-        # Read the actual fill price and profit from history deals
-        exit_price = entry  # fallback
-        pnl = 0.0
-        try:
-            exec_time_str = trade.get("exec_time")
-            from_dt = (
-                datetime.fromisoformat(exec_time_str).replace(tzinfo=_tz.utc)
-                if exec_time_str else datetime.now(_tz.utc) - timedelta(days=30)
-            )
-            deals = mt5_service.get_history_deals(
-                from_date=from_dt,
-                to_date=datetime.now(_tz.utc),
-            )
-            if deals is not None and not deals.empty:
-                closing_deals = deals[deals["position_id"] == ticket] if ticket else pd.DataFrame()
-                if not closing_deals.empty:
-                    exit_price = float(closing_deals.iloc[-1]["price"])
-                    mt5_profit = float(closing_deals["profit"].sum())
-                    equity = _get_equity(mt5_service)
-                    pnl = mt5_profit / equity if equity else 0.0
-        except Exception as e_hist:
-            log(f"  Could not read closing deal for {trade_id}: {e_hist}")
-            # Fallback: last tick price, no PnL from MT5
-            try:
-                tick = mt5_service.get_last_tick(SYMBOL)
-                exit_price = tick.get("bid" if direction == "LONG" else "ask", entry)
-            except Exception:
-                pass
-
-        trade_logger.mark_closed(trade_id, exit_price, pnl)
-        trade_logger.update_trade(trade_id, comment="time_barrier")
-        log(f"\x1b[93mTrade {trade_id} force-closed (TIME BARRIER): "
-            f"exit={exit_price:.2f}  PnL={pnl:.4%}\x1b[0m")
-    except Exception as e:
-        log(f"\x1b[91mError force-closing trade {trade_id} (time barrier): {e}\x1b[0m")
-
-
-def _close_from_history(mt5_service, trade):
-    """Search in history deals the trade result."""
-    try:
-        from datetime import timezone
-        exec_time = datetime.fromisoformat(trade["exec_time"]) if trade["exec_time"] else datetime.now() - timedelta(days=30)
-        deals = mt5_service.get_history_deals(
-            from_date=exec_time,
-            to_date=datetime.now(timezone.utc),
-        )
-        if deals is not None and not deals.empty:
-            # Search closing deal by position ticket
-            ticket = trade.get("mt5_ticket")
-            deal = deals[deals["position_id"] == ticket] if ticket else pd.DataFrame()
-
-            if not deal.empty:
-                exit_price = float(deal.iloc[-1]["price"])
-                mt5_profit = float(deal["profit"].sum())
-                equity = _get_equity(mt5_service)
-                pnl = mt5_profit / equity if equity else 0.0
-                trade_logger.mark_closed(trade["id"], exit_price, pnl)
-                log(f"\x1b[92mTrade {trade['id']} closed with MT5: exit={exit_price:.2f}, PnL={pnl:.4%}\x1b[0m")
-    except Exception as e:
-        log(f"\x1b[91mError retrieving history: {e}\x1b[0m")
 
 
 # --- SCHEDULER SETUP --------------------------------------------------------
@@ -592,17 +453,7 @@ def setup_scheduler(mt5_service=None):
         replace_existing=True,
     )
 
-    # Job 3: Check positions each hour
-    scheduler.add_job(
-        job_check_positions,
-        CronTrigger(minute=CONFIG["live_trading"]["check_positions_minute"]),
-        kwargs={"mt5_service": mt5_service},
-        id="check_positions",
-        name="Check Open Positions (each hour)",
-        replace_existing=True,
-    )
-
-    # Job 4: Daily equity snapshot at 23:59 UTC
+    # Job 3: Daily equity snapshot at 23:59 UTC
     scheduler.add_job(
         trade_logger.record_equity_snapshot,
         CronTrigger(hour=23, minute=59),
@@ -612,7 +463,7 @@ def setup_scheduler(mt5_service=None):
     )
 
     state["scheduler_running"] = True
-    log("Scheduler setup: prediction@23:55, execution@00:05, check@xx:30")
+    log("Scheduler setup: prediction@23:55, execution@00:05")
 
     return scheduler
 
@@ -642,8 +493,8 @@ def get_status() -> dict:
 
 def run_now(mt5_service=None):
     """Execute manual prediction + execution (test / debug)."""
-    log("\x1b[36mMANUAL RUN — Prediction\x1b[0m")
+    log("\x1b[36mMANUAL RUN - Prediction\x1b[0m")
     job_predict(mt5_service)
-    log("\x1b[36mMANUAL RUN — Execution\x1b[0m")
+    log("\x1b[36mMANUAL RUN - Execution\x1b[0m")
     job_execute(mt5_service)
     log("\x1b[36mMANUAL RUN completed\x1b[0m")
