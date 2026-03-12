@@ -75,7 +75,7 @@
         "batch_size": 128,
         "epochs": 100,
         "learning_rate": 0.001,
-        "hidden_size": 64,
+        "hidden_size": 128,
         "num_layers": 3,
         "num_classes": 3,
         "dropout": 0.2,
@@ -191,15 +191,15 @@
         "model_type": "lstm",
         "volume_min": 0.01,
         "volume_max": 30.00,
-        "prediction_hour": 23,
-        "prediction_minute": 55,
+        "prediction_hour": 0,
+        "prediction_minute": 15,
         "execution_hour": 0,
-        "execution_minute": 5,
-        "check_positions_minute": 30
+        "execution_minute": 30
     },
 
     "dashboard": {
-        "host": "127.0.0.1",
-        "port": 8050
+        "host": "0.0.0.0",
+        "port": 8050,
+        "cache_refresh_hours": 6
     }
 }

@@ -21,7 +21,7 @@
 #     # -- Print summary -------------------------------------------------
 #     total_time = pd.to_timedelta(df["time_s"].sum(), unit="s")
 #     print(f"\n{'='*70}")
-#     print(f"  {label}  —  {len(df)} configs  |  Total time: {total_time}")
+#     print(f"  {label}  -  {len(df)} configs  |  Total time: {total_time}")
 #     print(f"{'='*70}")
 
 #     show_cols = id_cols + RANK_COLS + rank_cols + ["avg_rank"]

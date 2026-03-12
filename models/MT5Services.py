@@ -182,7 +182,7 @@ class MT5Services:
         if len(orders) == 0:
             return None
         df = pd.DataFrame(list(orders), columns = orders[0]._asdict().keys())
-        print(f"\x1b[92m  -> Retrieved {len(df)} active orders\x1b[0m")
+        # print(f"\x1b[92m  -> Retrieved {len(df)} active orders\x1b[0m")
 
         df['time_setup'] = df['time_setup'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='s'))
         df['time_setup_msc'] = df['time_setup_msc'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='ms'))
@@ -198,18 +198,21 @@ class MT5Services:
         """
         return mt5.positions_total()
     
-    def get_active_positions(self) -> Optional[pd.DataFrame]:
+    def get_active_positions(self, ticket = None) -> Optional[pd.DataFrame]:
         """
         Get active positions
         """
-        positions = mt5.positions_get()
+        if ticket is not None:
+            positions = mt5.positions_get(ticket=ticket)
+        else:
+            positions = mt5.positions_get()
         if positions == None:
             raise Exception(f"Error retrieving active positions: {mt5.last_error()}")
         if len(positions) == 0:
             return None
 
         df = pd.DataFrame(list(positions), columns = positions[0]._asdict().keys())
-        print(f"\x1b[92m  -> Retrieved {len(df)} active positions\x1b[0m")
+        # print(f"\x1b[92m  -> Retrieved {len(df)} active positions\x1b[0m")
         df['time'] = df['time'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='s'))
         df['time_msc'] = df['time_msc'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='ms'))
         df['time_update'] = df['time_update'].apply(lambda x: self.__safe_convert_to_datetime(x, unit='s'))

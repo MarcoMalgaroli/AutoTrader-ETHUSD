@@ -2,7 +2,7 @@ import json
 import pandas as pd
 import numpy as np
 from ta.trend import EMAIndicator, MACD
-from ta.momentum import RSIIndicator, ROCIndicator, StochRSIIndicator
+from ta.momentum import RSIIndicator, StochRSIIndicator
 from ta.volatility import AverageTrueRange, BollingerBands, KeltnerChannel
 from ta.volume import OnBalanceVolumeIndicator, AccDistIndexIndicator, EaseOfMovementIndicator, NegativeVolumeIndexIndicator
 from typing import List, Optional
@@ -96,7 +96,6 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     for length in [5, 10, 15, 20]:
         data[f'RSI_{length}'] = RSIIndicator(close = data['close'], window = length).rsi()
         data[f'RSI_{length}_diff'] = data[f'RSI_{length}'].diff()
-    data['ROC_10'] = ROCIndicator(close = data['close'], window = 10).roc()
     data['StochRSI_14_k'] = StochRSIIndicator(close = data['close'], window = 14).stochrsi_k()
     data['StochRSI_14_d'] = StochRSIIndicator(close = data['close'], window = 14).stochrsi_d()
 
@@ -140,12 +139,16 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     data['ROC_1'] = data['close'].pct_change(1)   # 1-day return
     data['ROC_3'] = data['close'].pct_change(3)   # 3-day return
     data['ROC_5'] = data['close'].pct_change(5)   # 5-day return
+    data['ROC_10'] = data['close'].pct_change(10)   # 10-day return
+    data['ROC_20'] = data['close'].pct_change(20)   # 20-day return
     data['RSI_5_accel'] = data['RSI_5'].diff().diff()  # RSI acceleration (change of change)
 
     # --- TREND REGIME SIGNALS (explicit crossover features) ---
     data['SMA_5_20_cross'] = (data['SMA_5'] - data['SMA_20']) / data['close']  # Normalized SMA crossover
     data['SMA_10_50_cross'] = (data['SMA_10'] - data['SMA_50']) / data['close']
     data['EMA_5_20_cross'] = (data['EMA_5'] - data['EMA_20']) / data['close']
+
+    data['vol_regime'] = data['ATR_14'] / data['ATR_14'].rolling(50).mean()  # Volatility regime: current ATR vs 50-day average ATR
 
     return data
 

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ symbol }} — AI Trading Dashboard</title>
+    <title>{{ symbol }} - AI Trading Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/public/stylesheets/style.css">
@@ -12,8 +12,8 @@
 
 <!-- --- NAVBAR ---------------------------------------------------------- -->
 <nav class="navbar navbar-dark bg-black border-bottom border-secondary px-3">
-    <span class="navbar-brand mb-0 h5">
-        <i class="bi bi-graph-up-arrow me-2 text-success"></i>{{ symbol }} <small class="text-muted fw-normal">AI Trading Dashboard</small>
+    <span class="navbar-brand mb-0 h5" id="nav-brand">
+        <i class="bi bi-graph-up-arrow me-2 text-success"></i><span id="nav-symbol">{{ symbol }}</span> <small class="text-muted fw-normal">AI Trading Dashboard</small>
     </span>
 
     <!-- Center: main navigation pills -->
@@ -48,7 +48,7 @@
     </div>
 </nav>
 
-<div class="container-fluid px-3 pb-3">
+<div class="container-fluid p-3">
 
     <!-- --- PIPELINE ERROR BANNER -------------------------------------- -->
     <div class="alert alert-danger d-none d-flex align-items-center mb-3" role="alert" id="pipeline-error">
@@ -73,7 +73,7 @@
                     <!-- Candlestick -->
                     <div class="card mb-3">
                         <div class="card-header d-flex justify-content-between align-items-center">
-                            <span><i class="bi bi-bar-chart-fill me-1"></i>{{ symbol }} — Daily</span>
+                            <span><i class="bi bi-bar-chart-fill me-1"></i><span id="chart-title">{{ symbol }}</span></span>
                             <div>
                                 <button class="btn btn-sm btn-outline-secondary" onclick="setRange(30, event)">1M</button>
                                 <button class="btn btn-sm btn-outline-secondary" onclick="setRange(180, event)">6M</button>
@@ -82,16 +82,18 @@
                             </div>
                         </div>
                         <div class="card-body p-0">
-                            <div id="chart-candles" class="chart-container" style="height:420px;"></div>
+                            <div id="chart-candles" class="chart-container" style="height:420px;">
+                                <div class="chart-loader" id="loader-candles">
+                                    <div class="spinner-border text-success" role="status"></div>
+                                    <div class="mt-2 text-muted small" id="loader-candles-text">Loading data…</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <!-- Live Equity Curve -->
                     <div class="card">
                         <div class="card-header d-flex justify-content-between align-items-center">
                             <span><i class="bi bi-lightning-fill me-1 text-warning"></i>Account Equity</span>
-                            <button class="btn btn-outline-warning btn-action" onclick="recordEquityNow()" title="Record current MT5 equity">
-                                <i class="bi bi-camera me-1"></i>Snapshot
-                            </button>
                         </div>
                         <div class="card-body p-0">
                             <div id="chart-equity-live" class="chart-container" style="height:220px;"></div>
@@ -121,9 +123,9 @@
                         <div class="card-body">
                             <div class="row g-2 small">
                                 <div class="col-6"><span class="text-muted">Next Prediction:</span></div>
-                                <div class="col-6 text-end fw-bold" id="live-next-pred">—</div>
+                                <div class="col-6 text-end fw-bold" id="live-next-pred">-</div>
                                 <div class="col-6"><span class="text-muted">Next Execution:</span></div>
-                                <div class="col-6 text-end fw-bold" id="live-next-exec">—</div>
+                                <div class="col-6 text-end fw-bold" id="live-next-exec">-</div>
                                 <div class="col-6"><span class="text-muted">Open Trades:</span></div>
                                 <div class="col-6 text-end fw-bold" id="live-open-count">0</div>
                                 <div class="col-6"><span class="text-muted">Pending Trades:</span></div>
@@ -131,7 +133,18 @@
                                 <div class="col-6"><span class="text-muted">Total Trades:</span></div>
                                 <div class="col-6 text-end fw-bold" id="live-total-count">0</div>
                                 <div class="col-6"><span class="text-muted">Last Signal:</span></div>
-                                <div class="col-6 text-end fw-bold" id="live-last-signal">—</div>
+                                <div class="col-6 text-end fw-bold" id="live-last-signal">-</div>
+                            </div>
+                            <!-- Live MT5 Account Info (shown when connected) -->
+                            <div class="d-none mt-2 pt-2 border-top border-secondary" id="live-account-info">
+                                <div class="row g-2 small">
+                                    <div class="col-4 text-muted">Equity</div>
+                                    <div class="col-4 text-muted text-center">Balance</div>
+                                    <div class="col-4 text-muted text-end">Profit</div>
+                                    <div class="col-4 fw-bold" id="live-acct-equity">-</div>
+                                    <div class="col-4 fw-bold text-center" id="live-acct-balance">-</div>
+                                    <div class="col-4 fw-bold text-end" id="live-acct-profit">-</div>
+                                </div>
                             </div>
                             <div class="mt-2 text-danger small d-none" id="live-error-box">
                                 <i class="bi bi-exclamation-triangle me-1"></i><span id="live-error-text"></span>
@@ -141,7 +154,7 @@
 
                     <!-- Live Prediction -->
                     <div class="card mb-3" id="prediction-box">
-                        <div class="card-header"><i class="bi bi-robot me-1"></i>AI Prediction — Next Candle</div>
+                        <div class="card-header"><i class="bi bi-robot me-1"></i>AI Prediction - <span id="pred-model-info">Next Candle</span></div>
                         <div class="card-body">
                             <div class="d-flex justify-content-between align-items-center mb-3">
                                 <div>
@@ -152,34 +165,34 @@
                                 </div>
                                 <div class="text-end">
                                     <span class="stat-label">Confidence</span>
-                                    <div class="stat-value" id="pred-conf">—</div>
+                                    <div class="stat-value" id="pred-conf">-</div>
                                 </div>
                             </div>
                             <div class="row text-center g-2">
                                 <div class="col-4">
                                     <div class="stat-label">Hold</div>
-                                    <div class="fw-bold" id="pred-hold">—</div>
+                                    <div class="fw-bold" id="pred-hold">-</div>
                                     <div class="progress" style="height:4px;">
                                         <div class="progress-bar bg-secondary" id="bar-hold" style="width:0%"></div>
                                     </div>
                                 </div>
                                 <div class="col-4">
                                     <div class="stat-label">Long</div>
-                                    <div class="fw-bold text-success" id="pred-long">—</div>
+                                    <div class="fw-bold text-success" id="pred-long">-</div>
                                     <div class="progress" style="height:4px;">
                                         <div class="progress-bar bg-success" id="bar-long" style="width:0%"></div>
                                     </div>
                                 </div>
                                 <div class="col-4">
                                     <div class="stat-label">Short</div>
-                                    <div class="fw-bold text-danger" id="pred-short">—</div>
+                                    <div class="fw-bold text-danger" id="pred-short">-</div>
                                     <div class="progress" style="height:4px;">
                                         <div class="progress-bar bg-danger" id="bar-short" style="width:0%"></div>
                                     </div>
                                 </div>
                             </div>
                             <div class="mt-3 text-muted small">
-                                Last price: <strong id="pred-price">—</strong> &nbsp;·&nbsp; <span id="pred-time">—</span>
+                                Last price: <strong id="pred-price">-</strong> &nbsp;·&nbsp; <span id="pred-time">-</span>
                             </div>
                         </div>
                     </div>
@@ -196,6 +209,7 @@
                                     <tr>
                                         <th>Data</th>
                                         <th>Dir.</th>
+                                        <th>Lots</th>
                                         <th>Entry</th>
                                         <th>TP / SL</th>
                                         <th>Status</th>
@@ -204,7 +218,7 @@
                                     </tr>
                                 </thead>
                                 <tbody id="live-trades-body">
-                                    <tr><td colspan="7" class="text-center text-muted py-3">No live trades</td></tr>
+                                    <tr><td colspan="8" class="text-center text-muted py-3">No live trades</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -308,42 +322,55 @@
             <!-- Backtest Results (hidden until run) -->
             <div id="bt-results" class="d-none">
 
+                <!-- Export to MT5 box -->
+                <div class="card border-info mb-3">
+                    <div class="card-body py-2 px-3 d-flex align-items-center justify-content-between">
+                        <small class="text-muted me-3">
+                            <i class="bi bi-exclamation-circle me-1"></i>This backtest is an approximation that does not account for spread, slippage, commission, or margin.
+                            Export signals and replay them in the <strong>MT5 Strategy Tester</strong> for broker-realistic results (instructions in <code>ea/README.md</code>).
+                        </small>
+                        <button class="btn btn-sm btn-outline-info flex-shrink-0" onclick="exportSignalsMT5()" id="btn-export-mt5" title="Download signals JSON for MT5 Strategy Tester">
+                            <i class="bi bi-download me-1"></i>Download Signals
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Stats Cards -->
                 <div class="row g-2 mb-3" id="stats-row">
                     <div class="col-6 col-md-3 col-xl">
                         <div class="card p-3 text-center h-100">
                             <div class="stat-label">Final Equity</div>
-                            <div class="stat-value" id="st-equity">—</div>
+                            <div class="stat-value" id="st-equity">-</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3 col-xl">
                         <div class="card p-3 text-center h-100">
                             <div class="stat-label">Total Return</div>
-                            <div class="stat-value" id="st-return">—</div>
+                            <div class="stat-value" id="st-return">-</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3 col-xl">
                         <div class="card p-3 text-center h-100">
                             <div class="stat-label">Trades</div>
-                            <div class="stat-value" id="st-trades">—</div>
+                            <div class="stat-value" id="st-trades">-</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3 col-xl">
                         <div class="card p-3 text-center h-100">
                             <div class="stat-label">Hit Rate</div>
-                            <div class="stat-value" id="st-hitrate">—</div>
+                            <div class="stat-value" id="st-hitrate">-</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3 col-xl">
                         <div class="card p-3 text-center h-100">
                             <div class="stat-label">Max Drawdown</div>
-                            <div class="stat-value" id="st-dd">—</div>
+                            <div class="stat-value" id="st-dd">-</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3 col-xl">
                         <div class="card p-3 text-center h-100">
                             <div class="stat-label">Avg Return</div>
-                            <div class="stat-value" id="st-avgret">—</div>
+                            <div class="stat-value" id="st-avgret">-</div>
                         </div>
                     </div>
                 </div>
@@ -353,7 +380,7 @@
                     <div class="col-12">
                         <div class="card mb-3">
                             <div class="card-header d-flex justify-content-between align-items-center">
-                                <span><i class="bi bi-bar-chart-fill me-1"></i>Backtest — Price & Signals</span>
+                                <span><i class="bi bi-bar-chart-fill me-1"></i>Backtest - Price & Signals</span>
                                 <div>
                                     <button class="btn btn-sm btn-outline-secondary" onclick="setBtRange(180, event)">6M</button>
                                     <button class="btn btn-sm btn-outline-secondary active" onclick="setBtRange(365, event)">1Y</button>
@@ -452,7 +479,7 @@
                                     <div class="d-none small mt-1" id="lc-symbol-feedback"></div>
                                 </div>
                                 <div class="col-md-4">
-                                    <label for="lc-timeframe" class="form-label small text-muted">Timeframe<span class="help-hint" data-bs-toggle="tooltip" data-bs-placement="top" title="Candle timeframe used for data download and feature engineering.">?</span></label>
+                                    <label for="lc-timeframe" class="form-label small text-muted">Timeframe<span class="help-hint" data-bs-toggle="tooltip" data-bs-placement="top" title="Candle timeframe used for data download, feature engineering and predictions.">?</span></label>
                                     <select class="form-select form-select-sm" id="lc-timeframe">
                                         <option value="H1">H1</option>
                                         <option value="H4">H4</option>
@@ -523,21 +550,20 @@
                 <!-- RIGHT COLUMN: Scheduler + Position Management -->
                 <div class="col-lg-6">
                     <div class="card mb-3">
-                        <div class="card-header"><i class="bi bi-alarm me-1"></i>Scheduler Times (UTC)</div>
+                        <div class="card-header"><i class="bi bi-alarm me-1"></i>Scheduler Times</div>
                         <div class="card-body">
                             <div class="row g-3">
-                                <div class="col-md-4 col-6">
+                                <div class="col-md-6 col-6">
                                     <label for="lc-pred-time" class="form-label small text-muted">Prediction Time<span class="help-hint" data-bs-toggle="tooltip" data-bs-placement="top" title="UTC time when the daily prediction job runs: downloads data, trains the model, and creates a pending trade.">?</span></label>
                                     <input type="time" class="form-control form-control-sm" id="lc-pred-time" value="23:55">
                                 </div>
-                                <div class="col-md-4 col-6">
+                                <div class="col-md-6 col-6">
                                     <label for="lc-exec-time" class="form-label small text-muted">Execution Time<span class="help-hint" data-bs-toggle="tooltip" data-bs-placement="top" title="UTC time when the daily execution job runs: sends the pending trade order to MT5.">?</span></label>
                                     <input type="time" class="form-control form-control-sm" id="lc-exec-time" value="00:05">
                                 </div>
-                                <div class="col-md-4 col-6">
-                                    <label for="lc-check-min" class="form-label small text-muted">Check Positions<span class="help-hint" data-bs-toggle="tooltip" data-bs-placement="top" title="Minute of each hour when open positions are checked for TP/SL hits via MT5.">?</span></label>
-                                    <input type="number" class="form-control form-control-sm" id="lc-check-min" value="30" min="0" max="59">
-                                </div>
+                            </div>
+                            <div class="mt-2">
+                                <small class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>These times are in your <strong>local system time (UTC)</strong>. Note that your MT5 terminal may use a different timezone (e.g. UTC+2/+3 for most brokers). Make sure to account for any offset so jobs run at the intended moment relative to candle close.</small>
                             </div>
                         </div>
                     </div>

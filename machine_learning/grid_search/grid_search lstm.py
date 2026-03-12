@@ -1,5 +1,5 @@
 """
-Grid Search – Walk-Forward Hyperparameter Tuning for LSTM Classifier and MLP.
+Grid Search - Walk-Forward Hyperparameter Tuning for LSTM Classifier and MLP.
 
 Each hyperparameter combination is evaluated by running the **full walk-forward
 backtest** (the same one used in ``backtest_triple_barrier``).  The scoring
@@ -34,7 +34,7 @@ PRINT_WIDTH = CONFIG["print_width"]
 
 
 # ===================================================================
-#  HELPERS – temporarily override module-level globals
+#  HELPERS - temporarily override module-level globals
 # ===================================================================
 
 def _patch_lstm_globals(params: dict):
@@ -86,7 +86,7 @@ def grid_search_lstm(
 
     Returns
     -------
-    pd.DataFrame  –  one row per combo, sorted by RoverMDD descending.
+    pd.DataFrame - one row per combo, sorted by RoverMDD descending.
     """
     if param_grid is None:
         param_grid = {
@@ -105,7 +105,7 @@ def grid_search_lstm(
     combos = list(itertools.product(*[param_grid[k] for k in keys]))
     n_combos = len(combos)
 
-    print("\n" + f" GRID SEARCH – LSTM ({n_combos} combos, walk-forward) ".center(PRINT_WIDTH, "="))
+    print("\n" + f" GRID SEARCH - LSTM ({n_combos} combos, walk-forward) ".center(PRINT_WIDTH, "="))
 
     results = []
     for idx, vals in enumerate(combos, 1):

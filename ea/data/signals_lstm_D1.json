@@ -1,0 +1,23 @@
+{
+  "symbol": "ETHUSD",
+  "timeframe": "D1",
+  "lookahead": 4,
+  "atr_mult": 1.5,
+  "threshold": 0.35,
+  "model_type": "lstm",
+  "generated_at": "2026-03-07T01:54:55.594183",
+  "total_signals": 1,
+  "signals": [
+    {
+      "signal_time": "2026-02-28 00:00:00",
+      "direction": "SHORT",
+      "signal_price": 1955.95,
+      "tp": 1750.19254,
+      "sl": 2161.70746,
+      "lookahead": 4,
+      "confidence": 0.355924,
+      "confidence_tier": "LOW",
+      "position_size_pct": 0.005
+    }
+  ]
+}

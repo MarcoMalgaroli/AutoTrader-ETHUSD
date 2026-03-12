@@ -35,7 +35,7 @@ TIMEFRAMES = {
     "MN1": "1MS",
 }
 
-def generate_dataset(mt5: MT5Services, symbol: Optional[str] = None, timeframes: List[str] = ["D1", "H12", "H4", "H1"]) -> List[Path]:
+def generate_dataset(mt5: MT5Services, symbol: Optional[str] = None, timeframes: List[str] = ["D1", "H12"]) -> List[Path]:
     symbol = symbol or mt5.get_selected_symbol()
     print("\n" + f" CREATING DATASET FOR {symbol} ".center(PRINT_WIDTH, "="))
     
