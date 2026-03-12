@@ -149,7 +149,7 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
     val_data = TensorDataset(torch.from_numpy(X_val_seq).float(), torch.from_numpy(y_val_seq).long())
     print(f"  -> Number of validation samples (each composed by {SEQ_LEN} time steps): {len(val_data)}")
     
-    train_loader = DataLoader(train_data, shuffle=False, batch_size=BATCH_SIZE)
+    train_loader = DataLoader(train_data, shuffle=True, batch_size=BATCH_SIZE)
     print(f"  -> Number of batches in train set (each composed by {BATCH_SIZE} samples): {len(train_loader)}")
     val_loader = DataLoader(val_data, shuffle=False, batch_size=BATCH_SIZE)
     print(f"  -> Number of batches in val set (each composed by {BATCH_SIZE} samples): {len(val_loader)}")
@@ -160,15 +160,25 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
 # --- THE LSTM MODEL ---
 class CryptoLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, output_size = 3, dropout_prob=0.3):
-        super(CryptoLSTM, self).__init__()        
+        super(CryptoLSTM, self).__init__()
         # LSTM Layer
         # batch_first=True means input shape is (Batch, Seq, Features)
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_prob if num_layers > 1 else 0)
+        # self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_prob if num_layers > 1 else 0)
+        
+
+        self.conv = nn.Conv1d(in_channels=input_size, out_channels=32, kernel_size=3, padding=1)
+        self.lstm = nn.LSTM(input_size=32, hidden_size=hidden_size, num_layers=num_layers, batch_first=True, dropout=dropout_prob if num_layers > 1 else 0)
         # Final Fully Connected Layer
         self.dropout = nn.Dropout(dropout_prob)
         self.fc = nn.Linear(hidden_size, output_size)
         
     def forward(self, x):
+        # x shape: (batch_size, seq_length, input_size)
+        # Permute for Conv1d: (batch_size, input_size, seq_length)
+        x = x.permute(0, 2, 1)
+        x = self.conv(x)
+        x = x.permute(0, 2, 1)  # Permute back to (batch_size, seq_length, hidden_size) for LSTM
+
         # Forward propagate LSTM
         # out shape: (batch_size, seq_length, hidden_size)
         out, _ = self.lstm(x)
@@ -204,7 +214,7 @@ def train_lstm_classifier(df: pd.DataFrame, lookahead_days=10, plot_results=True
     class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
     print(f"\n  -> Calculated Class Weights (balanced): {class_weights}")
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights) # Cross Entropy Loss for multi-class classification
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05) # Cross Entropy Loss for multi-class classification
     optimizer = optim.Adam(model.parameters(), lr = LEARNING_RATE, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
