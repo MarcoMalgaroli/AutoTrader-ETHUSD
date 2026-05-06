@@ -272,8 +272,28 @@ def _check_open_positions():
 
     for trade in open_trades:
         ticket = trade.get("mt5_ticket", 0)
+        is_active = True
 
-        # -- 1. Time barrier: close if lookahead window has expired --
+        # -- 1. Check with MT5 for TP/SL hit --
+        if ticket:
+            try:
+                positions = _mt5_service.get_active_positions()
+                if positions is not None:
+                    pos = positions[positions["ticket"] == ticket]
+                    if pos.empty:
+                        # No longer active - closed by TP/SL, get results from history
+                        _close_from_history(_mt5_service, trade)
+                        is_active = False
+                else:
+                    _close_from_history(_mt5_service, trade)
+                    is_active = False
+            except Exception as e:
+                log(f"\x1b[91mError checking ticket {ticket}: {e}\x1b[0m")
+
+        if not is_active:
+            continue
+
+        # -- 2. Time barrier: close if lookahead window has expired --
         exec_time_str = trade.get("exec_time")
         if exec_time_str:
             try:
@@ -289,23 +309,9 @@ def _check_open_positions():
                     else:
                         log(f"\x1b[93mTrade {trade['id']}: time barrier hit "
                             f"but no MT5 ticket - cannot force-close\x1b[0m")
-                    continue  # skip TP/SL check for this trade
+                    continue  # skip any remaining checks
             except Exception as e:
                 log(f"\x1b[91mError evaluating time barrier for {trade['id']}: {e}\x1b[0m")
-
-        # -- 2. Check with MT5 for TP/SL hit --
-        if ticket:
-            try:
-                positions = _mt5_service.get_active_positions()
-                if positions is not None:
-                    pos = positions[positions["ticket"] == ticket]
-                    if pos.empty:
-                        # No longer active - closed by TP/SL, get results from history
-                        _close_from_history(_mt5_service, trade)
-                else:
-                    _close_from_history(_mt5_service, trade)
-            except Exception as e:
-                log(f"\x1b[91mError checking ticket {ticket}: {e}\x1b[0m")
 
 
 async def _periodic_broadcast():
