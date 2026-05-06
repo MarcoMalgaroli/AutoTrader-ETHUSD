@@ -63,7 +63,7 @@
 
 import pandas as pd
 
-df = pd.read_csv("machine_learning/grid_search/4_grid_search_lstm_results.csv")
+df = pd.read_csv("machine_learning/grid_search/grid_search_lstm_results.csv")
 
 # total execution time in hh:mm:ss
 total_time = pd.to_timedelta(df["time_s"].sum(), unit="s")

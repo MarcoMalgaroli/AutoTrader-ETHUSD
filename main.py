@@ -9,6 +9,8 @@ from config_utils import get_trading_config
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
+import datetime
+import time
 
 # https://www.youtube.com/watch?v=kbBPD1YbYcg&list=PL0iqkWGt8zzlFU_Ds4PEPee6Zg0c11Y-t&index=4
 
@@ -43,6 +45,7 @@ def main():
     # generate datasets for D1 and H1 timeframes
     # path_list = dataset_utils.generate_dataset(mt5, timeframes = ["D1", "H1"]) # Download datasets
     
+
     # Validate datasets
     if not dataset_utils.validate_dataset(path_list):
         print("\x1b[91;1mTerminating due to dataset validation failure.\x1b[0m")
@@ -55,8 +58,8 @@ def main():
     # Feature engineering
     path_list_final = feature_engineering.calculate_features(path_list, lookahead=lookahead, atr_mult=atr_mult)
     
-    for path in path_list_final:
-        dataset_utils.plot_dataset(path, num_candles = 300, atr_mult=atr_mult)
+    # for path in path_list_final:
+    #     dataset_utils.plot_dataset(path, num_candles = 300, atr_mult=atr_mult)
     
     for path in path_list_final:
         print("\n" + " LIVE PREDICTION ".center(PRINT_WIDTH, "="))
@@ -68,7 +71,14 @@ def main():
         # data = df.iloc[:i]
         data = df.copy()
         print(data.tail(5))
+        
+        start_train = time.time()
         model, scaler, feature_cols = lstm.train_lstm_classifier(data, lookahead_days=lookahead, plot_results=False) # Train LSTM model on each dataset
+        
+        end_train = time.time()
+        elapsed_time = end_train - start_train
+        formatted_time = str(datetime.timedelta(seconds=int(elapsed_time)))
+        print(f"\nTempo di addestramento totale: {formatted_time} (hh:mm:ss)")
 
         # PREDICT NEXT CANDLE
         probs = lstm.predict_next_move(model, data, feature_cols, scaler)
@@ -86,8 +96,8 @@ def main():
         preds.append((data.iloc[-1]['time'], actions[best_action], probs[best_action], actions[data.iloc[-1]['target']]))
         
         print("\n" + " LIVE PREDICTION SUMMARY ".center(PRINT_WIDTH, "="))
-        for time, action, conf, real in preds:
-            print(f"{time}: AI={action} (Conf: {conf:.2%}), REAL={real}")
+        for t, action, conf, real in preds:
+            print(f"{t}: AI={action} (Conf: {conf:.2%}), REAL={real}")
     
     # backtest_window = CONFIG["backtest"]["backtest_window"]
     # predict_window = CONFIG["backtest"]["predict_window"]

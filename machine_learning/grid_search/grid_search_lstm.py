@@ -16,18 +16,19 @@ import itertools
 import json
 import sys
 import time
+import argparse
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import machine_learning.lstm_classifier as lstm_mod
-import machine_learning.mlp as mlp_mod
 from backtest.backtest_triple_barrier import backtest_triple_barrier
+from config_utils import get_trading_config
 
-with open(Path(__file__).resolve().parent.parent / "config.json", "r") as f:
+with open(PROJECT_ROOT / "config.json", "r") as f:
     CONFIG = json.load(f)
 
 PRINT_WIDTH = CONFIG["print_width"]
@@ -46,6 +47,9 @@ def _patch_lstm_globals(params: dict):
         "dropout":       "DROPOUT",
         "seq_len":       "SEQ_LEN",
         "batch_size":    "BATCH_SIZE",
+        "conv_layout":   "CONV_LAYOUT",
+        "conv_out_channels": "CONV_OUT_CHANNELS",
+        "conv_kernel_size":  "CONV_KERNEL_SIZE",
     }
     saved = {}
     for key, attr in mapping.items():
@@ -59,9 +63,60 @@ def _restore_lstm_globals(saved: dict):
     for attr, val in saved.items():
         setattr(lstm_mod, attr, val)
 
+
+def _patch_lstm_feature_selection(params: dict):
+    """Temporarily patch feature selection settings inside lstm config dict."""
+    saved = {
+        "mode": lstm_mod._LSTM_CFG["feature_selection"].get("mode", "auto"),
+        "corr_threshold": lstm_mod._LSTM_CFG["feature_selection"].get("corr_threshold", 0.85),
+    }
+
+    if "feature_mode" in params:
+        lstm_mod._LSTM_CFG["feature_selection"]["mode"] = params["feature_mode"]
+    if "corr_threshold" in params:
+        lstm_mod._LSTM_CFG["feature_selection"]["corr_threshold"] = params["corr_threshold"]
+    return saved
+
+
+def _restore_lstm_feature_selection(saved: dict):
+    lstm_mod._LSTM_CFG["feature_selection"]["mode"] = saved["mode"]
+    lstm_mod._LSTM_CFG["feature_selection"]["corr_threshold"] = saved["corr_threshold"]
+
+
+def _is_valid_combo(params: dict) -> bool:
+    """Prune incompatible or redundant combinations from the Cartesian grid."""
+    if params.get("conv_layout") == "none":
+        if params.get("conv_out_channels") not in (None, 16):
+            return False
+        if params.get("conv_kernel_size") not in (None, 3):
+            return False
+
+    if params.get("feature_mode") != "auto" and params.get("corr_threshold") not in (None, 0.85):
+        return False
+
+    return True
+
 # ===================================================================
 #  PUBLIC API
 # ===================================================================
+
+def get_default_param_grid() -> dict:
+    """Return the default LSTM grid-search search space."""
+    #3*3*3*3*3*3*3*3*2*3*2 = 78732
+    return {
+        "hidden_size":   [16, 32],
+        "num_layers":    [1, 2],
+        "learning_rate": [0.001, 0.0005, 0.0001],
+        "dropout":       [0.2, 0.35, 0.5],
+        "seq_len":       [20, 40, 60],
+        "batch_size":    [64, 128, 256],
+        "conv_layout":   ["none", "single", "double"],
+        "conv_out_channels": [16, 32, 64],
+        "conv_kernel_size": [3, 5],
+        "feature_mode":  ["manual"],#, "auto", "all"],
+        #"corr_threshold": [0.85, 0.92],
+    }
+
 
 def grid_search_lstm(
     df: pd.DataFrame,
@@ -79,7 +134,7 @@ def grid_search_lstm(
     df : pd.DataFrame
         Full enhanced dataset (with features & target already computed).
     param_grid : dict, optional
-        Keys: hidden_size, num_layers, learning_rate, dropout, seq_len, batch_size.
+        Keys include model/training, conv architecture and feature-selection knobs.
         Values are lists of candidates.  A sensible small default is provided.
     seed : int
         Random seed (applied before each combo).
@@ -89,20 +144,17 @@ def grid_search_lstm(
     pd.DataFrame - one row per combo, sorted by RoverMDD descending.
     """
     if param_grid is None:
-        param_grid = {
-            "hidden_size":   [32, 64, 128],
-            "num_layers":    [2, 3],
-            "learning_rate": [0.001, 0.0005, 0.0001],
-            "dropout":       [0.2, 0.3, 0.4],
-            "seq_len":       [20, 40, 60],
-            "batch_size":    [128, 256],
-        }
+        param_grid = get_default_param_grid()
 
     bt_cfg = CONFIG["backtest"]
-    tr_cfg = CONFIG["trading"]
+    tr_cfg = get_trading_config(CONFIG)
 
     keys = list(param_grid.keys())
-    combos = list(itertools.product(*[param_grid[k] for k in keys]))
+    combos = [
+        combo for combo in itertools.product(*[param_grid[k] for k in keys])
+        if _is_valid_combo(dict(zip(keys, combo)))
+    ]
+
     n_combos = len(combos)
 
     print("\n" + f" GRID SEARCH - LSTM ({n_combos} combos, walk-forward) ".center(PRINT_WIDTH, "="))
@@ -115,7 +167,9 @@ def grid_search_lstm(
         print(f"  [{idx}/{n_combos}] {label}")
 
         lstm_mod.set_seed(seed)
+        lstm_mod.set_runtime_overrides(params)
         saved = _patch_lstm_globals(params)
+        saved_fs = _patch_lstm_feature_selection(params)
 
         t0 = time.time()
         try:
@@ -135,7 +189,9 @@ def grid_search_lstm(
             summary = {"final_equity": 0.0, "trades": 0, "wins": 0,
                        "losses": 0, "hit_rate": 0.0, "max_drawdown": 0.0, "RoverMDD": 0.0}
         finally:
+            _restore_lstm_feature_selection(saved_fs)
             _restore_lstm_globals(saved)
+            lstm_mod.set_runtime_overrides({})
 
         elapsed = time.time() - t0
         row = {
@@ -159,6 +215,26 @@ def grid_search_lstm(
     print(results_df.head(10).to_string(index=False))
     return results_df
 
+
+def _build_cli_param_grid(base_grid: dict, args: argparse.Namespace) -> dict:
+    """Return a filtered param grid from CLI arguments."""
+    param_grid = {key: list(values) for key, values in base_grid.items()}
+
+    if args.hidden_size:
+        param_grid["hidden_size"] = args.hidden_size
+    if args.num_layers:
+        param_grid["num_layers"] = args.num_layers
+
+    return param_grid
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run LSTM walk-forward grid search.")
+    parser.add_argument("--hidden-size", type=int, nargs="+", dest="hidden_size", help="Restrict grid search to one or more hidden_size values.")
+    parser.add_argument("--num-layers", type=int, nargs="+", dest="num_layers", help="Restrict grid search to one or more num_layers values.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed used for combo sampling and model initialization.")
+    return parser.parse_args()
+
 # ===================================================================
 #  CLI entry-point
 # ===================================================================
@@ -166,21 +242,28 @@ def grid_search_lstm(
 if __name__ == "__main__":
     from dataset_utils import dataset_utils, feature_engineering
 
+    args = _parse_args()
+
+    default_param_grid = get_default_param_grid()
+    param_grid = _build_cli_param_grid(default_param_grid, args)
+
     path_list = [Path("datasets/raw/ETHUSD_D1.csv")]
     if not dataset_utils.validate_dataset(path_list):
         print("Dataset validation failed.")
         sys.exit(1)
 
     lookahead = CONFIG["trading"]["lookahead"]
-    atr_mult = CONFIG["trading"]["atr_mult"]
+    atr_mult = CONFIG[f"trading_{lookahead}"]["atr_mult"]
     path_list_final = feature_engineering.calculate_features(
         path_list, lookahead=lookahead, atr_mult=atr_mult,
     )
     df = pd.read_csv(path_list_final[0])
 
-    print("\n\x1b[36m>>> Running LSTM grid search (walk-forward) …\x1b[0m")
-    lstm_results = grid_search_lstm(df)
+    print("\n\x1b[36m>>> Running LSTM grid search (walk-forward) ...\x1b[0m")
+    print(param_grid)
+    lstm_results = grid_search_lstm(df, param_grid=param_grid, seed=args.seed)
 
     # Save full results to CSV for later analysis
-    lstm_results.to_csv("grid_search_lstm_results.csv", index=False)
-    print("\n\x1b[32;1m>>> Results saved to grid_search_lstm_results.csv\x1b[0m")
+    output_path = Path(f"gs_lstm_{param_grid['hidden_size'][0]}_{param_grid['num_layers'][0]}.csv")
+    lstm_results.to_csv(output_path, index=False)
+    print(f"\n\x1b[32;1m>>> Results saved to {output_path}\x1b[0m")

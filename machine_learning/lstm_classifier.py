@@ -1,5 +1,4 @@
 import json
-import joblib
 import pandas as pd
 import numpy as np
 import torch
@@ -14,7 +13,7 @@ import matplotlib.pyplot as plt
 import copy
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from dataset_utils.feature_engineering import select_features
+from dataset_utils.feature_engineering import NON_STATIONARY_COLS, select_features
 from config_utils import get_model_config, get_trading_config
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
@@ -26,6 +25,7 @@ _LSTM_CFG = get_model_config("lstm_classifier", CONFIG)
 _TR_CFG = get_trading_config(CONFIG)
 
 PRINT_WIDTH = CONFIG["print_width"]
+_RUNTIME_OVERRIDES = {}
 
 # Check for a GPU or use CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,6 +41,7 @@ def _reload_config():
     global CONFIG, _LSTM_CFG, _TR_CFG, PRINT_WIDTH
     global SEQ_LEN, BATCH_SIZE, EPOCHS, LEARNING_RATE
     global HIDDEN_SIZE, NUM_LAYERS, NUM_CLASSES, DROPOUT
+    global CONV_LAYOUT, CONV_OUT_CHANNELS, CONV_KERNEL_SIZE
 
     with open(_CONFIG_PATH, "r") as f:
         CONFIG = json.load(f)
@@ -57,6 +58,49 @@ def _reload_config():
     NUM_LAYERS = _LSTM_CFG["num_layers"]
     NUM_CLASSES = _LSTM_CFG["num_classes"]
     DROPOUT = _LSTM_CFG["dropout"]
+    CONV_LAYOUT = _LSTM_CFG.get("conv_layout", "single")
+    CONV_OUT_CHANNELS = _LSTM_CFG.get("conv_out_channels", 32)
+    CONV_KERNEL_SIZE = _LSTM_CFG.get("conv_kernel_size", 3)
+    _apply_runtime_overrides()
+
+
+def _apply_runtime_overrides():
+    """Apply temporary overrides (used by grid search) on top of config values."""
+    global SEQ_LEN, BATCH_SIZE, LEARNING_RATE, HIDDEN_SIZE, NUM_LAYERS, DROPOUT
+    global CONV_LAYOUT, CONV_OUT_CHANNELS, CONV_KERNEL_SIZE
+
+    if not _RUNTIME_OVERRIDES:
+        return
+
+    scalar_map = {
+        "seq_len": "SEQ_LEN",
+        "batch_size": "BATCH_SIZE",
+        "learning_rate": "LEARNING_RATE",
+        "hidden_size": "HIDDEN_SIZE",
+        "num_layers": "NUM_LAYERS",
+        "dropout": "DROPOUT",
+        "conv_layout": "CONV_LAYOUT",
+        "conv_out_channels": "CONV_OUT_CHANNELS",
+        "conv_kernel_size": "CONV_KERNEL_SIZE",
+    }
+
+    for key, attr in scalar_map.items():
+        if key in _RUNTIME_OVERRIDES:
+            globals()[attr] = _RUNTIME_OVERRIDES[key]
+            _LSTM_CFG[key] = _RUNTIME_OVERRIDES[key]
+
+    fs_cfg = _LSTM_CFG.setdefault("feature_selection", {})
+    if "feature_mode" in _RUNTIME_OVERRIDES:
+        fs_cfg["mode"] = _RUNTIME_OVERRIDES["feature_mode"]
+    if "corr_threshold" in _RUNTIME_OVERRIDES:
+        fs_cfg["corr_threshold"] = _RUNTIME_OVERRIDES["corr_threshold"]
+
+
+def set_runtime_overrides(overrides: dict | None = None):
+    """Set temporary run-time overrides; pass None/{} to clear."""
+    global _RUNTIME_OVERRIDES
+    _RUNTIME_OVERRIDES = dict(overrides or {})
+    _apply_runtime_overrides()
 
 def set_seed(seed=None):
     if seed is None:
@@ -75,6 +119,9 @@ HIDDEN_SIZE = _LSTM_CFG["hidden_size"]
 NUM_LAYERS = _LSTM_CFG["num_layers"]
 NUM_CLASSES = _LSTM_CFG["num_classes"]
 DROPOUT = _LSTM_CFG["dropout"]
+CONV_LAYOUT = _LSTM_CFG.get("conv_layout", "single")
+CONV_OUT_CHANNELS = _LSTM_CFG.get("conv_out_channels", 32)
+CONV_KERNEL_SIZE = _LSTM_CFG.get("conv_kernel_size", 3)
 
 # --- DATA PREPARATION ---
 # Note: each row contains the target of the action to perform at the opening at the next candle
@@ -109,11 +156,15 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
     train_df = labeled_df.iloc[:split_idx].copy()
     val_df = labeled_df.iloc[split_idx - SEQ_LEN + 1:].copy()
 
-    # Feature selection: auto or manual
+    # Feature selection: auto, manual, or all
     fs_cfg = _LSTM_CFG["feature_selection"]
-    if fs_cfg["mode"] == "auto":
+    fs_mode = fs_cfg.get("mode", "auto")
+    if fs_mode == "auto":
         feature_cols = select_features(train_df, corr_threshold=fs_cfg["corr_threshold"])
         print(f"  -> Auto-selected features ({len(feature_cols)}): {feature_cols}")
+    elif fs_mode == "all":
+        feature_cols = [c for c in train_df.columns if c not in NON_STATIONARY_COLS]
+        print(f"  -> All eligible features ({len(feature_cols)}): {feature_cols}")
     else:
         feature_cols = fs_cfg["feature_cols"]
         print(f"  -> Manual features ({len(feature_cols)}): {feature_cols}")
@@ -161,23 +212,44 @@ def prepare_dataloader(data: pd.DataFrame, lookahead_days: int = 10, val_pct: fl
 class CryptoLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, output_size = 3, dropout_prob=0.3):
         super(CryptoLSTM, self).__init__()
-        # LSTM Layer
-        # batch_first=True means input shape is (Batch, Seq, Features)
-        # self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_prob if num_layers > 1 else 0)
-        
+        conv_kernel = max(1, int(CONV_KERNEL_SIZE))
+        if conv_kernel % 2 == 0:
+            conv_kernel += 1
+        conv_padding = conv_kernel // 2
 
-        self.conv = nn.Conv1d(in_channels=input_size, out_channels=32, kernel_size=3, padding=1)
-        self.lstm = nn.LSTM(input_size=32, hidden_size=hidden_size, num_layers=num_layers, batch_first=True, dropout=dropout_prob if num_layers > 1 else 0)
+        self.conv_layout = CONV_LAYOUT
+        if self.conv_layout == "none":
+            lstm_input_size = input_size
+            self.conv_stack = None
+        elif self.conv_layout == "double":
+            conv_channels = max(4, int(CONV_OUT_CHANNELS))
+            self.conv_stack = nn.Sequential(
+                nn.Conv1d(in_channels=input_size, out_channels=conv_channels, kernel_size=conv_kernel, padding=conv_padding),
+                nn.ReLU(),
+                nn.Conv1d(in_channels=conv_channels, out_channels=conv_channels, kernel_size=conv_kernel, padding=conv_padding),
+                nn.ReLU(),
+            )
+            lstm_input_size = conv_channels
+        else:
+            conv_channels = max(4, int(CONV_OUT_CHANNELS))
+            self.conv_stack = nn.Sequential(
+                nn.Conv1d(in_channels=input_size, out_channels=conv_channels, kernel_size=conv_kernel, padding=conv_padding),
+                nn.ReLU(),
+            )
+            lstm_input_size = conv_channels
+
+        self.lstm = nn.LSTM(input_size=lstm_input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True, dropout=dropout_prob if num_layers > 1 else 0)
         # Final Fully Connected Layer
         self.dropout = nn.Dropout(dropout_prob)
         self.fc = nn.Linear(hidden_size, output_size)
         
     def forward(self, x):
         # x shape: (batch_size, seq_length, input_size)
-        # Permute for Conv1d: (batch_size, input_size, seq_length)
-        x = x.permute(0, 2, 1)
-        x = self.conv(x)
-        x = x.permute(0, 2, 1)  # Permute back to (batch_size, seq_length, hidden_size) for LSTM
+        if self.conv_stack is not None:
+            # Conv1d expects (batch_size, channels, seq_length)
+            x = x.permute(0, 2, 1)
+            x = self.conv_stack(x)
+            x = x.permute(0, 2, 1)
 
         # Forward propagate LSTM
         # out shape: (batch_size, seq_length, hidden_size)
@@ -208,6 +280,8 @@ def train_lstm_classifier(df: pd.DataFrame, lookahead_days=10, plot_results=True
     # Model Initialization
     model = CryptoLSTM(len(feature_cols), HIDDEN_SIZE, NUM_LAYERS, output_size = NUM_CLASSES, dropout_prob=DROPOUT).to(device)
 
+    print(model)
+    
     # Loss and Optimizer
     # 1. Calculate weights based on the frequency in the train set
     class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y_train), y=y_train)
