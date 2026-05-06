@@ -1,0 +1,87 @@
+graph TD
+    Backend --> Backtest
+
+    subgraph External["Sistemi esterni"]
+        MT5["MetaTrader 5"]
+    end
+
+    subgraph Backtest["Backtesting (Walk-Forward)"]
+        BT["Backtest Engine
+        Simulazione di Walk-forward backtest o
+        Generazione di trade da importare nello strategy tester di MT5"]
+        BT --> MT5
+    end
+
+    subgraph Applicazione["Bot di trading"]
+        Frontend["Web Dashboard (HTML/CSS/JS + WS)"]
+        Backend["FastAPI Backend"]
+        DataLayer["Data Layer
+        Download datasets
+        Feature engineering
+        (SQLite + CSV)"]
+        SignalEngine["Signal Engine
+        Long Short Term Memory (LSTM) + Multi Layer Perceptron (MLP)"]
+        SignalComposer["Signal Composer
+        Interpretazione segnali
+        Logica di trading"]
+        ExecutionEngine["Execution Engine
+        Interazione con MT5
+        Gestione ordini"]
+
+
+        Frontend -->|"API REST + WebSockets"| Backend
+        Backend --> DataLayer
+        MT5 -->|"Download candele OHLC"| DataLayer
+        Backend --> SignalEngine
+        DataLayer --> SignalEngine
+        Backend -->|"Predizioni"| SignalComposer
+        SignalComposer -->|"Azione da compiere"| ExecutionEngine
+        ExecutionEngine -->|"Esecuzione a mercato"| MT5
+    end
+
+
+
+
+
+=================================================================================================================
+
++---------------------+
+|   Raw OHLCV Data    |  <-- df con colonne: open, high, low, close, ATR_14, target
++---------------------+
+            |
+            v
++---------------------+
+| Feature Selection   |  <-- selezione manuale o automatica delle colonne da usare
+|  & Scaling          |
++---------------------+
+            |
+            v
++---------------------+
+|  Model Training     |  <-- LSTM o MLP
+|  (walk-forward)     |  
+|  Train on past data |
++---------------------+
+            |
+            v
++---------------------+
+|  Prediction         |  <-- pred_arr (0,1,2), probs_arr (probabilità per ogni classe)
++---------------------+
+            |
+            v
++---------------------+
+| Signal Conversion   |  <-- mappatura 0,1,2 -> -1,0,1
+| Confidence Filter   |  <-- soglia minima per entrare in trade
++---------------------+
+            |
+            v
++---------------------+
+| Trade Simulation    |  <-- loop su lookahead, calcolo TP/SL basato su ATR
+| Equity Calculation  |  <-- realistic entry price, exit price, commission
+| Position Sizing     |  <-- low/med/high confidence
++---------------------+
+            |
+            v
++---------------------+
+| Metrics / Summary   |  <-- hit rate, avg return, volatility, max drawdown
+|                     |      equity_curve, trade log
++---------------------+
