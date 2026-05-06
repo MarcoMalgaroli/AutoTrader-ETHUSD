@@ -112,7 +112,7 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     data['MACD_norm'] = data['MACD'] / data['close']
 
     # Volatility indicators: ATR (Average True Range), Bollinger Bands, Keltner Channel
-    data['ATR_14'] = AverageTrueRange(high = data['high'], low = data['low'], close = data['close'], window = 14).average_true_range()
+    data['ATR_14'] = AverageTrueRange(high = data['high'], low = data['low'], close = data['close'], window = 4).average_true_range()
     data['ATR_norm'] = data['ATR_14'] / data['close']
 
     bb_indicator = BollingerBands(close=data['close'], window=20, window_dev=2)
